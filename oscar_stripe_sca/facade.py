@@ -2,13 +2,22 @@ from decimal import Decimal as D, ROUND_HALF_UP
 import logging
 
 from django.apps import apps
-from django.conf import settings
+from django.urls import reverse_lazy
 from django.utils import timezone
+
 
 import stripe
 
+from . import settings
+from .constants import (
+    CAPTURE_METHOD_AUTOMATIC,
+    CAPTURE_METHOD_MANUAL,
+    PAYMENT_METHOD_TYPE_CARD,
+    SESSION_MODE_PAYMENT,
+)
 
-logger = logging.getLogger(__name__)
+
+logger = logging.getLogger(settings.STRIPE_LOGGER_NAME)
 Source = apps.get_model("payment", "Source")
 Order = apps.get_model("order", "Order")
 
@@ -34,16 +43,17 @@ ZERO_DECIMAL_CURRENCIES = (
 
 class PaymentItem:
     def __init__(self, **kwargs):
-        self.quantity = kwargs.get("quantity")
         self.title = kwargs.get("title")
         self.price_incl_tax = kwargs.get("price_incl_tax")
         self.price_currency = kwargs.get("price_currency")
+        self.quantity = kwargs.get("quantity")
+        self.tax_code = kwargs.get("tax_code")
 
 
 class Facade(object):
     def __init__(self):
         stripe.api_key = settings.STRIPE_SECRET_KEY
-        stripe.api_version = "2020-03-02"
+        stripe.api_version = settings.STRIPE_API_VERSION  # "2020-03-02"
 
     @staticmethod
     def get_friendly_decline_message(error):
@@ -66,6 +76,18 @@ class Facade(object):
         else:
             return int(D(str(price)).quantize(D("0.01"), ROUND_HALF_UP) * 100)
 
+    def _get_shipping_tax_code(self):
+        return None  # Implement this in your subclass for maximal flexibility!
+
+    def _get_default_tax_code(self):
+        return None  # Implement this in your subclass for maximal flexibility!
+
+    def _get_tax_code(self, product):
+        return None  # Implement this in your subclass for maximal flexibility!
+
+    def _choose_tax_code(self, raw_line_items):
+        return None  # Implement this in your subclass for maximal flexibility!
+
     def _get_raw_line_items(self):
         raw_line_items = []
 
@@ -79,31 +101,35 @@ class Facade(object):
                         price_incl_tax=price_incl_tax,
                         price_currency=line.price_currency,
                         quantity=quantity,
+                        tax_code=self._get_tax_code(line.product),
                     )
                 )
 
         if self.basket.is_shipping_required() and self.shipping_method:
-            price = self.shipping_method.calculate(self.basket)
+            shipping_price = self.shipping_method.calculate(self.basket)
             raw_line_items.append(
                 PaymentItem(
                     title=self.shipping_method.name,
-                    price_incl_tax=price.incl_tax,
-                    price_currency=price.currency,
+                    price_incl_tax=shipping_price.incl_tax,
+                    price_currency=shipping_price.currency,
                     quantity=1,
+                    tax_code=self._get_shipping_tax_code(),
                 )
             )
 
         return raw_line_items
 
-    def _prepare_line_item(self, name, amount, currency, quantity):
+    def _prepare_line_item(self, name, amount, currency, quantity, tax_code=None):
         prepared_line_item = {}
 
         if settings.STRIPE_USE_PRICES_API:
+            product_data = {"name": name}
+            if tax_code and settings.STRIPE_ENABLE_TAX_COMPUTATION:
+                product_data.update({"tax_code" tax_code})
+
             prepared_line_item = {
                 "price_data": {
-                    "product_data": {
-                        "name": name,
-                    },
+                    "product_data": product_data,
                     "currency": currency,
                     "unit_amount": amount,
                 },
@@ -130,17 +156,17 @@ class Facade(object):
                     for raw_line_item in raw_line_items
                 ]
             )
-            amount = (self.convert_to_cents(total.incl_tax, total.currency),)
+            amount = self.convert_to_cents(total.incl_tax, total.currency)
             currency = total.currency
             quantity = 1
+            tax_code = self._choose_tax_code(raw_line_items)
 
             prepared_line_item = self._prepare_line_item(
-                name, amount, currency, quantity
+                name, amount, currency, quantity, tax_code
             )
             prepared_line_items.append(prepared_line_item)
 
         else:
-
             for raw_line_item in raw_line_items:
 
                 name = raw_line_item.title
@@ -149,6 +175,7 @@ class Facade(object):
                 )
                 currency = raw_line_item.price_currency
                 quantity = raw_line_item.quantity
+                tax_code = raw_line_item.tax_code
 
                 prepared_line_item = self._prepare_line_item(
                     name, amount, currency, quantity
@@ -163,7 +190,7 @@ class Facade(object):
         raw_line_items,
         session_line_items,
     ):
-        return {}
+        return {}  # Implement this in your subclass for maximal flexibility!
 
     def _get_discount_metadata(self):
         discounts = []
@@ -181,7 +208,9 @@ class Facade(object):
         session_metadata = {}
 
         discount_metadata = self._get_discount_metadata()
-        session_metadata.update({"discounts": discount_metadata})
+        session_metadata.update({
+            "discounts": discount_metadata,
+        })
 
         extra_session_metadata = self._get_extra_session_metadata(
             session_metadata,
@@ -198,26 +227,63 @@ class Facade(object):
         raw_line_items,
         session_line_items,
     ):
+        return {}  # Implement this in your subclass for maximal flexibility!
 
-        # TODO: make this configurable
-
-        extra_session_params = {
-            "automatic_tax": {"enabled": True},
-            "invoice_creation": {"enabled": True},
+    def _get_invoice_session_params(
+        self,
+        session_params,
+        raw_line_items,
+        session_line_items,
+    ):
+        invoice_session_params = {
+            "invoice_creation": {
+                "enabled": True,
+            },
         }
-        return extra_session_params
+        return invoice_session_params
+
+    def _get_tax_session_params(
+        self,
+        session_params,
+        raw_line_items,
+        session_line_items,
+    ):
+        tax_session_params = {
+            "automatic_tax": {
+                "enabled": True,
+            },
+        }
+        return tax_session_params
 
     def _get_cancel_url(self):
-        return settings.STRIPE_PAYMENT_CANCEL_URL.format(self.basket.id)
+        base_cancel_url = settings.STRIPE_PAYMENT_CANCEL_URL or (
+            "{0}{1}".format(
+                settings.STRIPE_RETURN_URL_BASE,
+                reverse_lazy("checkout:stripe-cancel"),
+            )
+        )
+        return base_cancel_url.format(self.basket.id)    
 
     def _get_success_url(self):
-        return settings.STRIPE_PAYMENT_SUCCESS_URL.format(self.basket.id)
+        base_success_url = settings.STRIPE_PAYMENT_SUCCESS_URL or (
+            "{0}{1}".format(
+                settings.STRIPE_RETURN_URL_BASE,
+                reverse_lazy("checkout:stripe-preview"),
+            )
+        )
+        return base_success_url.format(self.basket.id)    
 
     def _get_capture_method(self):
-        return "manual"
+        if (
+            settings.STRIPE_BYPASS_PREVIEW_STEP or
+            settings.STRIPE_ENABLE_INVOICE_GENERATION
+        ):
+            return CAPTURE_METHOD_AUTOMATIC
+        else:
+            return CAPTURE_METHOD_MANUAL
 
     def _get_session_mode(self):
-        return "payment"
+        return SESSION_MODE_PAYMENT
 
     def _build_session_params(
         self, raw_line_items, session_line_items, session_metadata
@@ -231,7 +297,7 @@ class Facade(object):
         session_params = {
             "mode": session_mode,
             "customer_email": self.customer_email,
-            "payment_method_types": ["card"],
+            "payment_method_types": [PAYMENT_METHOD_TYPE_CARD],
             "line_items": session_line_items,
             "metadata": session_metadata,
             "success_url": success_url,
@@ -240,6 +306,18 @@ class Facade(object):
                 "capture_method": capture_method,
             },
         }
+
+        if settings.STRIPE_ENABLE_TAX_COMPUTATION:
+            tax_session_params = self._get_tax_session_params(
+                session_params, raw_line_items, session_line_items
+            )
+            session_params.update(tax_session_params)
+
+        if settings.STRIPE_ENABLE_INVOICE_GENERATION:
+            invoice_session_params = self._get_invoice_session_params(
+                session_params, raw_line_items, session_line_items
+            )
+            session_params.update(invoice_session_params)
 
         extra_session_params = self._get_extra_session_params(
             session_params, raw_line_items, session_line_items

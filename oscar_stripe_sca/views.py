@@ -1,4 +1,5 @@
-from django.conf import settings
+import logging
+
 from django.contrib import messages
 from django.core.exceptions import PermissionDenied
 from django.http import HttpResponseRedirect
@@ -13,8 +14,18 @@ from oscar.apps.checkout.views import PaymentDetailsView as CorePaymentDetailsVi
 from oscar.core.exceptions import ModuleNotFoundError
 from oscar.core.loading import get_class, get_model
 
-from . import PAYMENT_METHOD_STRIPE, PAYMENT_EVENT_PURCHASE
-from .facade import Facade, logger
+from . import settings
+from .constants import (
+    PACKAGE_NAME,
+    PAYMENT_EVENT_PURCHASE,
+    PAYMENT_METHOD_STRIPE,
+)
+from .loading import get_class_by_path
+
+
+logger = logging.getLogger(settings.STRIPE_LOGGER_NAME)
+
+Facade = get_class_by_path(settings.STRIPE_FACADE_CLASS_PATH)
 
 SourceType = get_model("payment", "SourceType")
 Source = get_model("payment", "Source")
@@ -29,7 +40,7 @@ except ModuleNotFoundError:
 
 
 class StripeSCAPaymentDetailsView(CorePaymentDetailsView):
-    template_name = "oscar_stripe_sca/stripe_payment_details.html"
+    template_name = f"{PACKAGE_NAME}/stripe_payment_details.html"
 
     def get_context_data(self, **kwargs):
         ctx = super(StripeSCAPaymentDetailsView, self).get_context_data(**kwargs)
@@ -51,7 +62,7 @@ class StripeSCAPaymentDetailsView(CorePaymentDetailsView):
 
 class StripeSCASuccessResponseView(CorePaymentDetailsView):
     preview = True
-    template_name_preview = "oscar_stripe_sca/stripe_preview.html"
+    template_name_preview = f"{PACKAGE_NAME}/stripe_preview.html"
 
     @property
     def pre_conditions(self):
@@ -147,7 +158,7 @@ class StripeSCASuccessResponseView(CorePaymentDetailsView):
         if not basket:
             messages.error(
                 self.request,
-                _("No basket was found that corresponds to your " "Stripe transaction"),
+                _("No basket was found that corresponds to your Stripe transaction"),
             )
             return HttpResponseRedirect(reverse("basket:summary"))
 
