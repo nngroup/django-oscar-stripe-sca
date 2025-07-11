@@ -1,4 +1,5 @@
-from django.conf import settings
+import logging
+
 from django.contrib import messages
 from django.core.exceptions import PermissionDenied
 from django.http import HttpResponseRedirect
@@ -13,8 +14,18 @@ from oscar.apps.checkout.views import PaymentDetailsView as CorePaymentDetailsVi
 from oscar.core.exceptions import ModuleNotFoundError
 from oscar.core.loading import get_class, get_model
 
-from . import PAYMENT_METHOD_STRIPE, PAYMENT_EVENT_PURCHASE
-from .facade import Facade, logger
+from . import settings
+from .constants import (
+    PACKAGE_NAME,
+    PAYMENT_EVENT_PURCHASE,
+    PAYMENT_METHOD_STRIPE,
+)
+from .loading import get_class_by_path
+
+
+logger = logging.getLogger(settings.STRIPE_LOGGER_NAME)
+
+Facade = get_class_by_path(settings.STRIPE_FACADE_CLASS_PATH)
 
 SourceType = get_model("payment", "SourceType")
 Source = get_model("payment", "Source")
@@ -29,29 +40,45 @@ except ModuleNotFoundError:
 
 
 class StripeSCAPaymentDetailsView(CorePaymentDetailsView):
-    template_name = "oscar_stripe_sca/stripe_payment_details.html"
+    template_name = f"{PACKAGE_NAME}/stripe_payment_details.html"
 
     def get_context_data(self, **kwargs):
-        ctx = super(StripeSCAPaymentDetailsView, self).get_context_data(**kwargs)
+        context_data = super().get_context_data(**kwargs)
+
+        basket = context_data["basket"]
+        total = context_data["order_total"]
+        shipping_method = context_data["shipping_method"]
         customer_email = None
         try:
-            customer_email = ctx["basket"].owner.email
+            customer_email = context_data["basket"].owner.email
         except AttributeError:
-            checkout_data = self.request.session[self.checkout_session.SESSION_KEY]
+            checkout_data = self.request.session[
+                self.checkout_session.SESSION_KEY
+            ]
             customer_email = checkout_data["guest"]["email"]
+
         stripe_session = Facade().begin(
-            customer_email, ctx["basket"], ctx["order_total"], ctx["shipping_method"]
+            customer_email=customer_email,
+            basket=basket,
+            total=total,
+            shipping_method=shipping_method,
         )
-        self.request.session["stripe_session_id"] = stripe_session.id
-        self.request.session["stripe_payment_intent_id"] = stripe_session.payment_intent
-        ctx["stripe_publishable_key"] = settings.STRIPE_PUBLISHABLE_KEY
-        ctx["stripe_session_id"] = stripe_session.id
-        return ctx
+        stripe_session_id = stripe_session.id
+        stripe_payment_intent_id = stripe_session.payment_intent
+
+        self.request.session["stripe_session_id"] = stripe_session_id
+        self.request.session["stripe_payment_intent_id"] = stripe_payment_intent_id
+
+        context_data.update({
+            "stripe_publishable_key": settings.STRIPE_PUBLISHABLE_KEY,
+            "stripe_session_id": stripe_session_id
+        })
+        return context_data
 
 
 class StripeSCASuccessResponseView(CorePaymentDetailsView):
     preview = True
-    template_name_preview = "oscar_stripe_sca/stripe_preview.html"
+    template_name_preview = f"{PACKAGE_NAME}/stripe_preview.html"
 
     @property
     def pre_conditions(self):
@@ -147,7 +174,7 @@ class StripeSCASuccessResponseView(CorePaymentDetailsView):
         if not basket:
             messages.error(
                 self.request,
-                _("No basket was found that corresponds to your " "Stripe transaction"),
+                _("No basket was found that corresponds to your Stripe transaction"),
             )
             return HttpResponseRedirect(reverse("basket:summary"))
 
