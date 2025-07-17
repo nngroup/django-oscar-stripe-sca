@@ -5,7 +5,6 @@ from django.apps import apps
 from django.urls import reverse_lazy
 from django.utils import timezone
 
-
 import stripe
 
 from . import settings
@@ -14,7 +13,7 @@ from .constants import (
     PAYMENT_METHOD_TYPE_CARD,
     SESSION_MODE_PAYMENT,
 )
-from .exceptions import MultipleTaxCodesInBasket
+from .exceptions import MultipleTaxCodesInBasket, PaymentCaptureError
 
 
 Source = apps.get_model("payment", "Source")
@@ -345,6 +344,16 @@ class Facade(object):
     def retrieve_payment_intent(self, payment_intent_id):
         return stripe.PaymentIntent.retrieve(payment_intent_id)
 
+    def _raise_capture_error(self, error_reason, original_exception=None):
+        error_message = f"Payment capture failed: {error_reason}"
+        self.logger.exception(error_message)
+
+        new_exception = PaymentCaptureError(error_message)
+        if original_exception:
+            raise new_exception from original_exception
+        else:
+            raise new_exception
+
     def capture(self, order_number, **kwargs):
         """
         If `capture_method` is set to `manual` when creating the Stripe
@@ -358,26 +367,24 @@ class Facade(object):
             order = Order.objects.get(number=order_number)
             payment_source = Source.objects.get(order=order)
 
-            # Get the charge identifier from the payment source
-            charge_id = payment_source.reference
+        except Order.DoesNotExist as ex:
+            reason = f"Order #{order_number} does not exist"
+            self._raise_capture_error(reason, ex)
 
-            stripe.PaymentIntent.modify(charge_id, receipt_email=order.user.email)
-            stripe.PaymentIntent.capture(charge_id)
+        except Source.DoesNotExist as ex:
+            reason = f"No Payment Source for Order #{order_number}"
+            self._raise_capture_error(reason, ex)
 
-            # Set the capture timestamp
-            payment_source.date_captured = timezone.now()
-            payment_source.save()
-            self.logger.info(
-                "Payment for Order #%s (ID: %s) was captured via Stripe (ref: %s)"
-                % (order.number, order.id, charge_id)
-            )
+        # Get the charge identifier from the payment source
+        charge_id = payment_source.reference
 
-        except Source.DoesNotExist as e:
-            self.logger.exception(f"Source error for Order #{order_number}")
-            raise Exception(
-                f"Capture failed: could not find Payment Source for Order #{order_number}"
-            )
+        stripe.PaymentIntent.modify(charge_id, receipt_email=order.user.email)
+        stripe.PaymentIntent.capture(charge_id)
 
-        except Order.DoesNotExist as e:
-            self.logger.exception(f"Order error for Order  #{order_number}")
-            raise Exception(f"Capture failed: Order #{order_number} does not exist")
+        # Set the capture timestamp
+        payment_source.date_captured = timezone.now()
+        payment_source.save()
+        self.logger.info(
+            "Payment for Order #%s (ID: %s) was captured via Stripe (ref: %s)"
+            % (order.number, order.id, charge_id)
+        )

@@ -6,6 +6,7 @@ from django.http import HttpResponseRedirect
 from django.shortcuts import get_object_or_404
 from django.urls import reverse
 from django.utils.decorators import method_decorator
+from django.utils.module_loading import import_string
 from django.utils.translation import gettext_lazy as _
 from django.views.decorators.csrf import csrf_exempt
 from django.views.generic import RedirectView
@@ -20,12 +21,11 @@ from .constants import (
     PAYMENT_EVENT_PURCHASE,
     PAYMENT_METHOD_STRIPE,
 )
-from .loading import get_class_by_path
 
 
 logger = logging.getLogger(settings.STRIPE_LOGGER_NAME)
 
-Facade = get_class_by_path(settings.STRIPE_FACADE_CLASS_PATH)
+Facade = import_string(settings.STRIPE_FACADE_CLASS_PATH)
 
 SourceType = get_model("payment", "SourceType")
 Source = get_model("payment", "Source")
