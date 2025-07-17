@@ -9,34 +9,17 @@ import stripe
 
 from . import settings
 from .constants import (
+    CAPTURE_METHOD_AUTOMATIC,
     CAPTURE_METHOD_MANUAL,
     PAYMENT_METHOD_TYPE_CARD,
     SESSION_MODE_PAYMENT,
+    ZERO_DECIMAL_CURRENCIES,
 )
 from .exceptions import MultipleTaxCodesInBasket, PaymentCaptureError
 
 
 Source = apps.get_model("payment", "Source")
 Order = apps.get_model("order", "Order")
-
-# https://support.stripe.com/questions/which-zero-decimal-currencies-does-stripe-support
-ZERO_DECIMAL_CURRENCIES = (
-    "BIF",  # Burundian Franc
-    "CLP",  # Chilean Peso
-    "DJF",  # Djiboutian Franc
-    "GNF",  # Guinean Franc
-    "JPY",  # Japanese Yen
-    "KMF",  # Comorian Franc
-    "KRW",  # South Korean Won
-    "MGA",  # Malagasy Ariary
-    "PYG",  # Paraguayan Guaraní
-    "RWF",  # Rwandan Franc
-    "VND",  # Vietnamese Đồng
-    "VUV",  # Vanuatu Vatu
-    "XAF",  # Central African Cfa Franc
-    "XOF",  # West African Cfa Franc
-    "XPF",  # Cfp Franc
-)
 
 
 class PaymentItem:
@@ -49,9 +32,16 @@ class PaymentItem:
 
 
 class Facade(object):
-    def __init__(self):
-        stripe.api_key = settings.STRIPE_SECRET_KEY
-        stripe.api_version = settings.STRIPE_API_VERSION
+
+    stripe_client = None
+
+    def __init__(self, api_key=None, api_version=None):
+        api_key = api_key or settings.STRIPE_SECRET_KEY
+        api_version = api_version or settings.STRIPE_API_VERSION
+        self.stripe_client = stripe.StripeClient(
+            api_key=api_key,
+            api_version=api_version,
+        )
         self.logger = logging.getLogger(settings.STRIPE_LOGGER_NAME)
 
     @staticmethod
@@ -94,9 +84,7 @@ class Facade(object):
         Customize at will!
 
         """
-        unique_tax_codes = list(set([
-            item.tax_code for item in raw_line_items
-        ]))
+        unique_tax_codes = list(set([item.tax_code for item in raw_line_items]))
         unique_tax_codes_count = len(unique_tax_codes)
         if unique_tax_codes_count == 0:
             return self._get_default_product_tax_code()
@@ -224,12 +212,14 @@ class Facade(object):
         return ", ".join(discounts)
 
     def _build_session_metadata(self, raw_line_items, session_line_items):
-        session_metadata = {}
+        session_metadata = {"scs": "oscar"}
 
         discount_metadata = self._get_discount_metadata()
-        session_metadata.update({
-            "discounts": discount_metadata,
-        })
+        session_metadata.update(
+            {
+                "discounts": discount_metadata,
+            }
+        )
 
         extra_session_metadata = self._get_extra_session_metadata(
             session_metadata,
@@ -261,26 +251,68 @@ class Facade(object):
         }
         return tax_session_params
 
-    def _get_cancel_url(self):
-        base_cancel_url = settings.STRIPE_PAYMENT_CANCEL_URL or (
+    def _get_checkout_step_url(self, base_url, step_name, with_basket_id=True):
+        step_url = base_url or (
             "{0}{1}".format(
                 settings.STRIPE_RETURN_URL_BASE,
-                reverse_lazy("checkout:stripe-cancel"),
+                reverse_lazy(f"checkout:{step_name}"),
             )
         )
-        return base_cancel_url.format(self.basket.id)
+        if with_basket_id:
+            step_url = step_url.format(self.basket.id)
+
+        return step_url
+
+    def _get_cancel_url(self):
+        return self._get_checkout_step_url(settings.STRIPE_CANCEL_URL, "stripe-cancel")
+
+    def _get_confirm_url(self):
+        return self._get_checkout_step_url(
+            settings.STRIPE_CONFIRM_URL,
+            "thank-you",
+            with_basket_id=False,
+        )
+
+    def _get_payment_check_url(self):
+        return self._get_checkout_step_url(
+            settings.STRIPE_PAYMENT_CHECK_URL,
+            "stripe-payment-check",
+            with_basket_id=False,
+        )
+
+    def _get_waiting_url(self):
+        return self._get_checkout_step_url(
+            settings.STRIPE_WAITING_URL,
+            "stripe-waiting",
+            with_basket_id=False,
+        )
+
+    def _get_webhook_url(self):
+        return self._get_checkout_step_url(
+            settings.STRIPE_WEBHOOK_URL,
+            "stripe-webhook",
+            with_basket_id=False,
+        )
+
+    def _get_preview_url(self):
+        return self._get_checkout_step_url(
+            settings.STRIPE_PREVIEW_URL, "stripe-preview"
+        )
 
     def _get_success_url(self):
-        base_success_url = settings.STRIPE_PAYMENT_SUCCESS_URL or (
-            "{0}{1}".format(
-                settings.STRIPE_RETURN_URL_BASE,
-                reverse_lazy("checkout:stripe-preview"),
-            )
-        )
-        return base_success_url.format(self.basket.id)
+        if not settings.STRIPE_BYPASS_ORDER_PREVIEW:
+            return self._get_preview_url()
+        else:
+            if settings.STRIPE_WAIT_FOR_PAYMENT_CONFIRMATION:
+                return self._get_waiting_url()
+            else:
+                return self._get_confirm_url()
 
     def _get_capture_method(self):
-        return CAPTURE_METHOD_MANUAL
+        if settings.STRIPE_BYPASS_ORDER_PREVIEW:
+            return CAPTURE_METHOD_AUTOMATIC
+        else:
+            return CAPTURE_METHOD_MANUAL
 
     def _get_session_mode(self):
         return SESSION_MODE_PAYMENT
@@ -320,7 +352,9 @@ class Facade(object):
 
         return session_params
 
-    def begin(self, customer_email, basket, total, shipping_method):
+    def create_checkout_session(
+        self, customer_email, basket, total, shipping_method
+    ):
         self.customer_email = customer_email
         self.basket = basket
         self.total = total
@@ -337,12 +371,35 @@ class Facade(object):
 
         self.basket.freeze()
 
-        session = stripe.checkout.Session.create(**session_params)
-
+        session = self.stripe_client.checkout.sessions.create(
+            params=session_params
+        )
         return session
 
-    def retrieve_payment_intent(self, payment_intent_id):
-        return stripe.PaymentIntent.retrieve(payment_intent_id)
+    def retrieve_checkout_session(self, checkout_session_id):
+        return self.stripe_client.checkout.sessions.retrieve(checkout_session_id)
+
+    def retrieve_payment_intent_id(self, checkout_session_id):
+        checkout_session = self.retrieve_checkout_session(checkout_session_id)
+        return checkout_session.get("payment_intent")
+
+    def retrieve_payment_intent(
+        self, payment_intent_id=None, checkout_session_id=None
+    ):
+        if not payment_intent_id:
+            if not checkout_session_id:
+                raise ValueError()
+
+            payment_intent_id = self.retrieve_payment_intent_id(checkout_session_id)
+
+        return self.stripe_client.payment_intents.retrieve(payment_intent_id)
+
+
+    def construct_event(self, payload, signature):
+
+        # TODO
+
+        pass
 
     def _raise_capture_error(self, error_reason, original_exception=None):
         error_message = f"Payment capture failed: {error_reason}"
@@ -358,8 +415,8 @@ class Facade(object):
         """
         If `capture_method` is set to `manual` when creating the Stripe
         session, the charge will only be pre-authorized. In that case,
-        one needs to use this `capture` method to actually charge the
-        customer.
+        one needs to use this `capture()` method to actually charge
+        the customer.
 
         """
         self.logger.info(f"Initiating Stripe payment capture for order #{order_number}")
@@ -375,16 +432,21 @@ class Facade(object):
             reason = f"No Payment Source for Order #{order_number}"
             self._raise_capture_error(reason, ex)
 
-        # Get the charge identifier from the payment source
-        charge_id = payment_source.reference
+        # Get the payment intent identifier from the payment source
+        payment_intent_id = payment_source.reference
 
-        stripe.PaymentIntent.modify(charge_id, receipt_email=order.user.email)
-        stripe.PaymentIntent.capture(charge_id)
+        self.stripe_client.payment_intents.update(
+            payment_intent_id,
+            params={
+                "receipt_email": order.user.email,
+            }
+        )
+        self.stripe_client.payment_intents.capture(payment_intent_id)
 
         # Set the capture timestamp
         payment_source.date_captured = timezone.now()
         payment_source.save()
         self.logger.info(
             "Payment for Order #%s (ID: %s) was captured via Stripe (ref: %s)"
-            % (order.number, order.id, charge_id)
+            % (order.number, order.id, payment_intent_id)
         )
