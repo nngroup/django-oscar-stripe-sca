@@ -5,32 +5,56 @@ from django.urls import path
 
 class StripeSCACheckoutConfig(CheckoutConfig):
     def ready(self):
-        stripe_payment_details_view = get_class(
+        self.stripe_payment_details_view = get_class(
             "oscar_stripe_sca.views", "StripeSCAPaymentDetailsView"
         )
-        stripe_success_view = get_class(
-            "oscar_stripe_sca.views", "StripeSCASuccessResponseView"
+        self.stripe_preview_view = get_class(
+            "oscar_stripe_sca.views", "StripeSCAPreviewView"
         )
-        stripe_cancel_view = get_class(
-            "oscar_stripe_sca.views", "StripeSCACancelResponseView"
+        self.stripe_webhook_view = get_class(
+            "oscar_stripe_sca.views", "StripeSCAWebhookView"
+        )
+        self.stripe_waiting_view = get_class(
+            "oscar_stripe_sca.views", "StripeSCAWaitingView"
+        )
+        self.stripe_payment_check_view = get_class(
+            "oscar_stripe_sca.views", "StripeSCAPaymentCheckView"
+        )
+        self.stripe_cancel_view = get_class(
+            "oscar_stripe_sca.views", "StripeSCACancelView"
         )
         super().ready()
 
     def get_urls(self):
-        urls = super(StripeSCACheckoutConfig, self).get_urls()
+        urls = super().get_urls()
         urls += [
             path(
-                "payment-details-stripe/",
+                "stripe/payment-details/",
                 self.stripe_payment_details_view.as_view(),
                 name="stripe-payment-details",
             ),
             path(
-                "preview-stripe/<int:basket_id>/",
-                self.stripe_success_view.as_view(preview=True),
+                "stripe/preview/<int:basket_id>/",
+                self.stripe_preview_view.as_view(preview=True),
                 name="stripe-preview",
             ),
             path(
-                "payment-cancel/<int:basket_id>/",
+                "stripe/webhook/",
+                self.stripe_webhook_view.as_view(),
+                name="stripe-payment-record",
+            ),
+            path(
+                "stripe/waiting/",
+                self.stripe_waiting_view.as_view(),
+                name="stripe-waiting",
+            ),
+            path(
+                "stripe/payment-check/",
+                self.stripe_payment_check_view.as_view(),
+                name="stripe-payment-check",
+            ),
+            path(
+                "stripe/cancel/<int:basket_id>/",
                 self.stripe_cancel_view.as_view(),
                 name="stripe-cancel",
             ),
