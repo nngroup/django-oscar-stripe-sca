@@ -9,9 +9,9 @@ from django.contrib.staticfiles.urls import staticfiles_urlpatterns
 admin.autodiscover()
 
 urlpatterns = [
-    path('admin', admin.site.urls),
-    path('i18n', include(i18n)),
-    path('', include(apps.get_app_config('oscar').urls[0])),
+    path("admin", admin.site.urls),
+    path("i18n", include(i18n)),
+    path("", include(apps.get_app_config("oscar").urls[0])),
 ]
 
 if settings.DEBUG:
