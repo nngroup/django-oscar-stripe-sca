@@ -1,4 +1,7 @@
-class MultipleTaxCodesInBasket(ValueError):
+from stripe.error import SignatureVerificationError
+
+
+class MultipleTaxCodesInBasketError(ValueError):
     pass
 
 

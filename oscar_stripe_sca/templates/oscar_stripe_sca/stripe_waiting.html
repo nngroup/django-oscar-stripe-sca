@@ -1,0 +1,54 @@
+{% extends 'oscar/checkout/payment_details.html' %}
+{% load i18n static currency_filters %}
+
+{% block checkout_title %}
+    {% translate "Checkout" %}
+{% endblock %}
+
+{% block checkout_nav %}
+    {% include 'oscar/checkout/nav.html' with step=4 %}
+{% endblock %}
+
+{% block order_contents %}{% endblock %}
+{% block shipping_address %}{% endblock %}
+{% block shipping_method %}{% endblock %}
+{% block payment_method %}{% endblock %}
+
+{% block payment_details_content %}
+    <p>Waiting for order confirmation, please wait...</p>
+
+    <script type="text/javascript">
+
+        const statusUrl = "{{ payment_status_url }}",
+              successUrl = "{{ payment_success_url }}",
+              pollingInterval = {{ polling_interval }};
+
+        window.addEventListener("load", (event) => {
+            setInterval(() => {
+
+                fetch(statusUrl, {
+                    method: "GET",
+                    headers: {
+                        "Accept": "application/json",
+                    }
+                })
+                .then((response) => response.json())
+                .then((data) => {
+
+                    console.debug("*** Received payment info: ", data);
+                    const isPaymentSuccessful = data.isSuccessful;
+                    if (isPaymentSuccessful) {
+                        window.location = successUrl;
+                    };
+
+                }).catch((error) => {
+
+                    console.error("*** Error: ", error);
+
+                });
+
+            }, pollingInterval);
+        });
+
+    </script>
+{% endblock %}

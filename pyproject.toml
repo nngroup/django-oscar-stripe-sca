@@ -4,8 +4,8 @@ build-backend = "flit_scm:buildapi"
 
 [project]
 name = "django-oscar-stripe-sca"
-version = "0.8.2-1"
-description = "Stripe Checkout (with Payment Intents) payment module for django-oscar"
+version = "0.8.2-2"
+description = "Stripe Checkout payment module for django-oscar"
 readme = "README.rst"
 license = "MIT"
 license-files = ["LICENSE"]
