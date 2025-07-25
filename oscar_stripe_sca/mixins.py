@@ -1,9 +1,12 @@
+from decimal import Decimal as D
+
 import logging
 
 from django.contrib import messages
 from django.utils.module_loading import import_string
 from django.utils.translation import gettext_lazy as _
 
+from oscar.apps.checkout.exceptions import PassedSkipCondition
 from oscar.core.loading import get_class, get_model
 from oscar.core.exceptions import ModuleNotFoundError
 
@@ -52,6 +55,54 @@ class StripePaymentMixin(object):
 
         return basket
 
+    def compute_surcharges(self, request, basket, shipping_charge, submission=None):
+        applicator_params = {"request": request}
+        if submission:
+            applicator_params.update({"submission": submission})
+        applicator = SurchargeApplicator(**applicator_params)
+
+        return applicator.get_applicable_surcharges(
+            basket=basket, shipping_charge=shipping_charge
+        )
+
+    def is_payment_required(self, request=None, basket=None):
+        logger.info("*** Checking if payment is actually required...")
+
+        request = request or self.request
+        basket = basket or request.basket
+
+        shipping_address = self.get_shipping_address(basket)
+        shipping_method = self.get_shipping_method(basket, shipping_address)
+        if shipping_method:
+            shipping_charge = shipping_method.calculate(basket)
+        else:
+            shipping_charge = prices.Price(
+                currency=basket.currency, excl_tax=D("0.00"), tax=D("0.00")
+            )
+
+        surcharges = self.compute_surcharges(request, basket, shipping_charge)
+        total = self.get_order_totals(basket, shipping_charge, surcharges)
+        result = total.excl_tax != D("0.00")
+        logger.info(f"*** total: {total} —> is_payment_required: {result}")
+
+        return result
+
+    def is_shipping_required(self, request=None, basket=None):
+        logger.info("*** Checking if shipping is actually required...")
+
+        request = request or self.request
+        basket = basket or request.basket
+        result = basket.is_shipping_required()
+        logger.info(f"*** is_shipping_required: {result}")
+
+        return result
+
+    def get_shipping_method_by_code(self, code, basket):
+        shipping_methods = ShippingRepository().get_shipping_methods(basket)
+        for shipping_method in shipping_methods:
+            if shipping_method.code == code:
+                return shipping_method
+
     def build_submission(self, basket, **kwargs):
         user = kwargs.pop("user", basket.owner)
         shipping_address = self.get_shipping_address(basket)
@@ -71,18 +122,15 @@ class StripePaymentMixin(object):
         }
 
         if not shipping_method:
-            order_total = shipping_charge = surcharges = None
+            shipping_charge = surcharges = order_total = None
         else:
             request = kwargs.pop("request", None)
             shipping_charge = shipping_method.calculate(basket)
-            surcharges = SurchargeApplicator(
-                request, submission
-            ).get_applicable_surcharges(basket, shipping_charge=shipping_charge)
+            surcharges = self.compute_surcharges(
+                request, basket, shipping_charge, submission=submission
+            )
             order_total = self.get_order_totals(
-                basket,
-                shipping_charge=shipping_charge,
-                surcharges=surcharges,
-                **kwargs,
+                basket, shipping_charge, surcharges, **kwargs
             )
 
         submission.update(
@@ -143,33 +191,14 @@ class TwoStepPaymentMixin(StripePaymentMixin):
 
 class OneStepPaymentMixin(StripePaymentMixin):
 
-    def _get_shipping_method(self, basket, code):
-        shipping_methods = ShippingRepository().get_shipping_methods(basket)
-        for shipping_method in shipping_methods:
-            if shipping_method.code == code:
-                return shipping_method
-
-    def _retrieve_shipping_method(self, basket, payment_intent_data):
-        try:
-            code = payment_intent_data["metadata"]["shipping_method"]
-        except KeyError:
-            return None
-        else:
-            return self._get_shipping_method(basket, code)
-
-    def build_submission(self, basket, payment_intent_data, **kwargs):
-        shipping_method = self._retrieve_shipping_method(basket, payment_intent_data)
-        logger.debug(f"*** shipping_method: {shipping_method}")
-
-        return super().build_submission(basket=basket, shipping_method=shipping_method)
-
-    def submit_basket(self, basket, payment_intent_data):
-        submission = self.build_submission(basket, payment_intent_data)
-        self.add_payment_details(
-            order_total=submission["order_total"],
-            payment_intent_id=payment_intent_data["id"],
-        )
-        self.submit(**submission)
+    def submit_basket(self, basket, shipping_method, payment_intent_id=None):
+        submission = self.build_submission(basket, shipping_method=shipping_method)
+        if payment_intent_id:
+            self.add_payment_details(
+                order_total=submission["order_total"],
+                payment_intent_id=payment_intent_id,
+            )
+        return self.submit(**submission)
 
     def submit(
         self,
@@ -223,3 +252,5 @@ class OneStepPaymentMixin(StripePaymentMixin):
                 msg,
                 exc_info=True,
             )
+
+        return order_number

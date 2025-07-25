@@ -11,8 +11,10 @@ from django.utils.translation import gettext_lazy as _
 from django.views.decorators.csrf import csrf_exempt
 from django.views.generic import RedirectView, TemplateView, View
 
-from oscar.apps.checkout.views import PaymentDetailsView as CorePaymentDetailsView
-from oscar.core.exceptions import ModuleNotFoundError
+from oscar.apps.checkout.views import (
+    IndexView as DefaultIndexView,
+    PaymentDetailsView as DefaultPaymentDetailsView,
+)
 from oscar.core.loading import get_class, get_model
 
 from . import settings
@@ -31,12 +33,32 @@ Facade = import_string(settings.STRIPE_FACADE_CLASS_PATH)
 
 Basket = get_model("basket", "Basket")
 Line = get_model("basket", "Line")
+OrderPlacementMixin = get_class("checkout.mixins", "OrderPlacementMixin")
 PaymentEvent = get_model("order", "PaymentEvent")
 
-OrderPlacementMixin = get_class("checkout.mixins", "OrderPlacementMixin")
+
+class StripeSCAIndexView(OneStepPaymentMixin, DefaultIndexView):
+
+    def _get_success_url(self):
+        return Facade()._get_order_confirmation_url()
+
+    def _should_fulfill_order(self):
+        return not self.is_payment_required() and not self.is_shipping_required()
+
+    def post(self, request, *args, **kwargs):
+        if self._should_fulfill_order():
+            basket = request.basket
+            shipping_method = self.get_shipping_method(basket)
+
+            self.submit_basket(basket, shipping_method)  # from OneStepPaymentMixin
+
+            return HttpResponseRedirect(self._get_success_url())
+
+        return HttpResponseRedirect(reverse("checkout:index"))
 
 
-class StripeSCACheckoutView(CorePaymentDetailsView):
+class StripeSCACheckoutView(StripePaymentMixin, DefaultPaymentDetailsView):
+    preview = False
     template_name = f"{PACKAGE_NAME}/stripe_checkout.html"
 
     def get_context_data(self, **kwargs):
@@ -79,7 +101,7 @@ class StripeSCACheckoutView(CorePaymentDetailsView):
         return self.render_to_response(context)
 
 
-class StripeSCAPreviewView(TwoStepPaymentMixin, CorePaymentDetailsView):
+class StripeSCAPreviewView(TwoStepPaymentMixin, DefaultPaymentDetailsView):
     preview = True
     template_name_preview = f"{PACKAGE_NAME}/stripe_preview.html"
 
@@ -100,6 +122,7 @@ class StripeSCAPreviewView(TwoStepPaymentMixin, CorePaymentDetailsView):
                 "Your checkout session has expired, please try again",
             )
             raise PermissionDenied
+
         else:
             context_data["order_total_incl_tax_cents"] = (
                 context_data["order_total"].incl_tax * 100
@@ -144,10 +167,16 @@ class StripeSCAWebhookView(OneStepPaymentMixin, OrderPlacementMixin, View):
 
         if event.type == "payment_intent.succeeded":
             payment_intent_data = event.data.object
-            basket_id = payment_intent_data["metadata"]["basket_id"]
+            metadata = payment_intent_data["metadata"]
+            basket_id = metadata["basket_id"]
             basket = self.load_frozen_basket(basket_id)
+            shipping_code = metadata["shipping_method"]
+            shipping_method = self.get_shipping_method_by_code(shipping_code, basket)
+            payment_intent_id = payment_intent_data["id"]
 
-            self.submit_basket(basket, payment_intent_data)  # from OneStepPaymentMixin
+            self.submit_basket(
+                basket, shipping_method, payment_intent_id
+            )  # from OneStepPaymentMixin
 
         logger.info("*** Stripe webhook processing complete")
         return HttpResponse(status=200)
