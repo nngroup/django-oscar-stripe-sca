@@ -15,40 +15,73 @@ class StripeSCACheckoutConfig(CheckoutConfig):
         from . import views
 
         super().ready()
-        self.payment_details_view = views.StripeSCACheckoutView
-        self.stripe_preview_view = views.StripeSCAPreviewView
-        self.stripe_webhook_view = views.StripeSCAWebhookView
-        self.stripe_waiting_view = views.StripeSCAWaitingView
-        self.stripe_payment_status_view = views.StripeSCAPaymentStatusView
-        self.stripe_cancel_view = views.StripeSCACancelView
+        self.zero_view = views.StripeSCAZeroView
+        self.checkout_view = views.StripeSCACheckoutView
+        self.cancel_view = views.StripeSCACancelView
+        self.preview_view = views.StripeSCAPreviewView
+        self.webhook_view = views.StripeSCAWebhookView
+        self.waiting_view = views.StripeSCAWaitingView
+        self.payment_status_view = views.StripeSCAPaymentStatusView
+        self.thank_you_view = views.StripeSCAThankYouView
 
     def get_urls(self):
-        urls = super().get_urls()
-        urls += [
+        return [
+            path("zero/", self.zero_view.as_view(), name="zero"),
+            path("", self.index_view.as_view(), name="index"),
             path(
-                "preview-stripe/<int:basket_id>/",
-                self.stripe_preview_view.as_view(preview=True),
-                name="stripe-preview",
+                "shipping-address/",
+                self.shipping_address_view.as_view(),
+                name="shipping-address",
             ),
             path(
-                "webhook-stripe/",
-                self.stripe_webhook_view.as_view(),
+                "user-address/edit/<int:pk>/",
+                self.user_address_update_view.as_view(),
+                name="user-address-update",
+            ),
+            path(
+                "user-address/delete/<int:pk>/",
+                self.user_address_delete_view.as_view(),
+                name="user-address-delete",
+            ),
+            path(
+                "shipping-method/",
+                self.shipping_method_view.as_view(),
+                name="shipping-method",
+            ),
+            path(
+                "payment-method/",
+                self.checkout_view.as_view(),
+                name="payment-method",
+            ),
+            path(
+                "payment-details/",
+                self.checkout_view.as_view(),
+                name="payment-details",
+            ),
+            path(
+                "cancel/<int:basket_id>/",
+                self.cancel_view.as_view(),
+                name="cancel",
+            ),
+            path(
+                "preview/",
+                self.preview_view.as_view(),
+                name="preview",
+            ),
+            path(
+                "webhook/",
+                self.webhook_view.as_view(),
                 name="stripe-webhook",
             ),
             path(
-                "waiting-stripe/",
-                self.stripe_waiting_view.as_view(),
-                name="stripe-waiting",
+                "waiting/",
+                self.waiting_view.as_view(),
+                name="waiting",
             ),
             path(
-                "payment-status-stripe/",
-                self.stripe_payment_status_view.as_view(),
-                name="stripe-payment-status",
+                "payment-status/",
+                self.payment_status_view.as_view(),
+                name="payment-status",
             ),
-            path(
-                "cancel-stripe/<int:basket_id>/",
-                self.stripe_cancel_view.as_view(),
-                name="stripe-cancel",
-            ),
+            path("thank-you/", self.thankyou_view.as_view(), name="thank-you"),
         ]
-        return urls

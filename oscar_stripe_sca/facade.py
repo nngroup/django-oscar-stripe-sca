@@ -31,7 +31,7 @@ class PaymentItem:
         self.tax_code = kwargs.get("tax_code")
 
 
-class Facade(object):
+class Facade:
 
     stripe_client = None
 
@@ -124,7 +124,7 @@ class Facade(object):
     def _get_cancel_url(self, basket):
         return self._get_checkout_step_url(
             settings.STRIPE_CANCEL_URL,
-            "stripe-cancel",
+            "cancel",
             basket_id=basket.id,
         )
 
@@ -137,19 +137,19 @@ class Facade(object):
     def _get_payment_status_url(self):
         return self._get_checkout_step_url(
             settings.STRIPE_PAYMENT_STATUS_URL,
-            "stripe-payment-status",
+            "payment-status",
         )
 
     def _get_waiting_for_payment_url(self):
         return self._get_checkout_step_url(
             settings.STRIPE_WAITING_FOR_PAYMENT_URL,
-            "stripe-waiting",
+            "waiting",
         )
 
     def _get_order_preview_url(self, basket):
         return self._get_checkout_step_url(
             settings.STRIPE_ORDER_PREVIEW_URL,
-            "stripe-preview",
+            "preview",
             basket_id=basket.id,
         )
 

@@ -3,16 +3,16 @@ import logging
 from django.contrib import messages
 from django.core.exceptions import PermissionDenied
 from django.http import HttpResponse, HttpResponseRedirect, JsonResponse
-from django.shortcuts import get_object_or_404
-from django.urls import reverse
-from django.utils.decorators import method_decorator
+from django.shortcuts import get_object_or_404, redirect
+from django.urls import reverse, reverse_lazy
 from django.utils.module_loading import import_string
 from django.utils.translation import gettext_lazy as _
-from django.views.decorators.csrf import csrf_exempt
-from django.views.generic import RedirectView, TemplateView, View
+from django.views import generic
 
-from oscar.apps.checkout.views import PaymentDetailsView as CorePaymentDetailsView
-from oscar.core.exceptions import ModuleNotFoundError
+from oscar.apps.checkout.views import (
+    PaymentDetailsView as DefaultPaymentDetailsView,
+    ThankYouView as DefaultThankYouView,
+)
 from oscar.core.loading import get_class, get_model
 
 from . import settings
@@ -22,7 +22,12 @@ from .constants import (
     PAYMENT_METHOD_STRIPE,
 )
 from .exceptions import SignatureVerificationError
-from .mixins import OneStepPaymentMixin, StripePaymentMixin, TwoStepPaymentMixin
+from .mixins import (
+    CSRFExemptMixin,
+    OneStepPaymentMixin,
+    StripePaymentMixin,
+    TwoStepPaymentMixin,
+)
 
 
 logger = logging.getLogger(settings.STRIPE_LOGGER_NAME)
@@ -31,12 +36,58 @@ Facade = import_string(settings.STRIPE_FACADE_CLASS_PATH)
 
 Basket = get_model("basket", "Basket")
 Line = get_model("basket", "Line")
+NoShippingRequired = get_class("shipping.methods", "NoShippingRequired")
+OrderPlacementMixin = get_class("checkout.mixins", "OrderPlacementMixin")
 PaymentEvent = get_model("order", "PaymentEvent")
 
-OrderPlacementMixin = get_class("checkout.mixins", "OrderPlacementMixin")
+
+class StripeSCAZeroView(OneStepPaymentMixin, OrderPlacementMixin, generic.View):
+
+    def _get_regular_checkout_url(self, request, *args, **kwargs):
+        return reverse_lazy("checkout:index")
+
+    def _get_order_confirmation_url(self, request, *args, **kwargs):
+        return Facade()._get_order_confirmation_url()
+
+    def _fulfill_order(self, request, *args, **kwargs):
+        logger.debug("*** Configuring basket...")
+        basket = request.basket
+        self.checkout_session.use_shipping_method(NoShippingRequired().code)
+        shipping_method = self.get_shipping_method(basket)
+
+        logger.debug("*** Submitting basket...")
+        order_number = self.submit_basket(  # from OneStepPaymentMixin
+            basket, shipping_method
+        )
+        logger.debug(f"*** New order number: {order_number}")
+
+        return order_number
+
+    def _should_fulfill_order(self, request, *args, **kwargs):
+        return (not self.is_payment_required()) and (not self.is_shipping_required())
+
+    def post(self, request, *args, **kwargs):
+        logger.info("*** Entering Stripe checkout funnel...")
+
+        if self._should_fulfill_order(request, *args, **kwargs):
+            logger.info("*** Order should be fulfilled right away")
+
+            order_number = self._fulfill_order(request, *args, **kwargs)
+            self.request.session["checkout_order_number"] = order_number
+
+            redirect_url = self._get_order_confirmation_url(request, *args, **kwargs)
+
+        else:
+            logger.info("*** Order should be processed as usual")
+
+            redirect_url = self._get_regular_checkout_url(request, *args, **kwargs)
+
+        logger.info(f"*** Redirecting to {redirect_url}...")
+        return HttpResponseRedirect(redirect_url)
 
 
-class StripeSCACheckoutView(CorePaymentDetailsView):
+class StripeSCACheckoutView(StripePaymentMixin, DefaultPaymentDetailsView):
+    preview = False
     template_name = f"{PACKAGE_NAME}/stripe_checkout.html"
 
     def get_context_data(self, **kwargs):
@@ -79,17 +130,15 @@ class StripeSCACheckoutView(CorePaymentDetailsView):
         return self.render_to_response(context)
 
 
-class StripeSCAPreviewView(TwoStepPaymentMixin, CorePaymentDetailsView):
+class StripeSCAPreviewView(
+    CSRFExemptMixin, TwoStepPaymentMixin, DefaultPaymentDetailsView
+):
     preview = True
     template_name_preview = f"{PACKAGE_NAME}/stripe_preview.html"
 
     @property
     def pre_conditions(self):
         return []
-
-    @method_decorator(csrf_exempt)
-    def dispatch(self, request, *args, **kwargs):
-        return super().dispatch(request, *args, **kwargs)
 
     def get_context_data(self, **kwargs):
         context_data = super().get_context_data(**kwargs)
@@ -100,6 +149,7 @@ class StripeSCAPreviewView(TwoStepPaymentMixin, CorePaymentDetailsView):
                 "Your checkout session has expired, please try again",
             )
             raise PermissionDenied
+
         else:
             context_data["order_total_incl_tax_cents"] = (
                 context_data["order_total"].incl_tax * 100
@@ -125,8 +175,12 @@ class StripeSCAPreviewView(TwoStepPaymentMixin, CorePaymentDetailsView):
         return self.submit_basket(basket)  # from TwoStepPaymentMixin
 
 
-@method_decorator(csrf_exempt, name="dispatch")
-class StripeSCAWebhookView(OneStepPaymentMixin, OrderPlacementMixin, View):
+class StripeSCAWebhookView(
+    CSRFExemptMixin, OneStepPaymentMixin, OrderPlacementMixin, generic.View
+):
+    http_method_names = ["post"]
+    pre_conditions = None
+    skip_conditions = None
 
     def post(self, request, *args, **kwargs):
         payload = request.body
@@ -144,16 +198,22 @@ class StripeSCAWebhookView(OneStepPaymentMixin, OrderPlacementMixin, View):
 
         if event.type == "payment_intent.succeeded":
             payment_intent_data = event.data.object
-            basket_id = payment_intent_data["metadata"]["basket_id"]
+            metadata = payment_intent_data["metadata"]
+            basket_id = metadata["basket_id"]
             basket = self.load_frozen_basket(basket_id)
+            shipping_code = metadata["shipping_method"]
+            shipping_method = self.get_shipping_method_by_code(shipping_code, basket)
+            payment_intent_id = payment_intent_data["id"]
 
-            self.submit_basket(basket, payment_intent_data)  # from OneStepPaymentMixin
+            self.submit_basket(
+                basket, shipping_method, payment_intent_id
+            )  # from OneStepPaymentMixin
 
         logger.info("*** Stripe webhook processing complete")
         return HttpResponse(status=200)
 
 
-class StripeSCAPaymentStatusView(View):
+class StripeSCAPaymentStatusView(generic.View):
 
     def _check_payment_status(self, payment_intent_id):
         logger.debug(f"*** Checking status of Payment Intent #{payment_intent_id}")
@@ -198,7 +258,7 @@ class StripeSCAPaymentStatusView(View):
         return JsonResponse(response_data)
 
 
-class StripeSCAWaitingView(TemplateView):
+class StripeSCAWaitingView(generic.TemplateView):
     template_name = f"{PACKAGE_NAME}/stripe_waiting.html"
 
     def _get_payment_status_url(self):
@@ -227,7 +287,7 @@ class StripeSCAWaitingView(TemplateView):
         return context_data
 
 
-class StripeSCACancelView(StripePaymentMixin, RedirectView):
+class StripeSCACancelView(StripePaymentMixin, generic.RedirectView):
     permanent = False
 
     def get_redirect_url(self, **kwargs):
@@ -246,3 +306,32 @@ class StripeSCACancelView(StripePaymentMixin, RedirectView):
         messages.error(self.request, _("Stripe transaction cancelled"))
 
         return super().get(request, *args, **kwargs)
+
+
+class StripeSCAThankYouView(DefaultThankYouView):
+    template_name = "oscar/checkout/thank_you.html"
+    context_object_name = "order"
+
+    def get_object(self, queryset=None):
+        order = None
+        session = self.request.session
+
+        if self.request.user.is_superuser:
+            kwargs = {}
+            if "order_number" in self.request.GET:
+                kwargs["number"] = self.request.GET["order_number"]
+            elif "order_id" in self.request.GET:
+                kwargs["id"] = self.request.GET["order_id"]
+            order = Order._default_manager.filter(**kwargs).first()
+
+        if not order:
+            if "checkout_order_id" in session:
+                order_id = session["checkout_order_id"]
+                logger.debug(f"*** order_id: {order_id}")
+                order = Order._default_manager.filter(pk=order_id).first()
+            elif "checkout_order_number" in session:
+                order_number = session["checkout_order_number"]
+                logger.debug(f"*** order_number: {order_number}")
+                order = Order._default_manager.filter(number=order_number).first()
+
+        return order
