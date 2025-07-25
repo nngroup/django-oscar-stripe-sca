@@ -23,9 +23,7 @@
                 <script type="text/javascript">
                     window.addEventListener("load", function(e) {
                         setTimeout(function() {
-                            console.log("Redirecting to stripe");
                             var stripe = Stripe('{{ stripe_publishable_key }}');
-
                             stripe.redirectToCheckout({
                               sessionId: '{{ stripe_session_id }}'
                             });

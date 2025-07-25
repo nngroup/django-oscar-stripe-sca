@@ -14,6 +14,8 @@ STRIPE_API_VERSION = getattr(settings, "STRIPE_API_VERSION", "2025-06-30.basil")
 STRIPE_PUBLISHABLE_KEY = getattr(settings, "STRIPE_PUBLISHABLE_KEY", None)
 STRIPE_SECRET_KEY = getattr(settings, "STRIPE_SECRET_KEY", None)
 
+STRIPE_REDIRECT_FROM_BACKEND = getattr(settings, "STRIPE_REDIRECT_FROM_BACKEND", True)
+
 STRIPE_RETURN_URL_BASE = getattr(
     settings, "STRIPE_RETURN_URL_BASE", "http://localhost/"
 )

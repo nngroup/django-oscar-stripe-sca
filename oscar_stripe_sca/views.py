@@ -58,16 +58,25 @@ class StripeSCACheckoutView(CorePaymentDetailsView):
             shipping_method=shipping_method,
             customer_email=customer_email,
         )
-        stripe_session_id = stripe_session.id
-        self.request.session["stripe_session_id"] = stripe_session_id
+        self.request.session["stripe_session_id"] = stripe_session.id
 
         context_data.update(
             {
+                "stripe_checkout_url": stripe_session.url,
                 "stripe_publishable_key": settings.STRIPE_PUBLISHABLE_KEY,
-                "stripe_session_id": stripe_session_id,
+                "stripe_session_id": stripe_session.id,
             }
         )
         return context_data
+
+    def get(self, request, *args, **kwargs):
+        context = self.get_context_data(**kwargs)
+
+        if settings.STRIPE_REDIRECT_FROM_BACKEND:
+            stripe_checkout_url = context.get("stripe_checkout_url")
+            return HttpResponseRedirect(stripe_checkout_url)
+
+        return self.render_to_response(context)
 
 
 class StripeSCAPreviewView(TwoStepPaymentMixin, CorePaymentDetailsView):

@@ -1,55 +1,52 @@
-from oscar.apps.checkout.apps import CheckoutConfig
-from oscar.core.loading import get_class
 from django.urls import path
+from django.utils.translation import gettext_lazy as _
+
+from oscar.apps.checkout.apps import CheckoutConfig
 
 
 class StripeSCACheckoutConfig(CheckoutConfig):
+    label = "checkout"
+    name = "oscar_stripe_sca.apps.checkout"
+    verbose_name = _("Checkout")
+
+    namespace = "checkout"
+
     def ready(self):
-        self.payment_details_view = get_class(
-            "oscar_stripe_sca.views", "StripeSCACheckoutView"
-        )
-        self.stripe_preview_view = get_class(
-            "oscar_stripe_sca.views", "StripeSCAPreviewView"
-        )
-        self.stripe_webhook_view = get_class(
-            "oscar_stripe_sca.views", "StripeSCAWebhookView"
-        )
-        self.stripe_waiting_view = get_class(
-            "oscar_stripe_sca.views", "StripeSCAWaitingView"
-        )
-        self.stripe_payment_status_view = get_class(
-            "oscar_stripe_sca.views", "StripeSCAPaymentStatusView"
-        )
-        self.stripe_cancel_view = get_class(
-            "oscar_stripe_sca.views", "StripeSCACancelView"
-        )
+        from . import views
+
         super().ready()
+        self.payment_details_view = views.StripeSCACheckoutView
+        self.stripe_preview_view = views.StripeSCAPreviewView
+        self.stripe_webhook_view = views.StripeSCAWebhookView
+        self.stripe_waiting_view = views.StripeSCAWaitingView
+        self.stripe_payment_status_view = views.StripeSCAPaymentStatusView
+        self.stripe_cancel_view = views.StripeSCACancelView
 
     def get_urls(self):
         urls = super().get_urls()
         urls += [
             path(
-                "stripe/preview/<int:basket_id>/",
+                "preview-stripe/<int:basket_id>/",
                 self.stripe_preview_view.as_view(preview=True),
                 name="stripe-preview",
             ),
             path(
-                "stripe/webhook/",
+                "webhook-stripe/",
                 self.stripe_webhook_view.as_view(),
                 name="stripe-webhook",
             ),
             path(
-                "stripe/waiting/",
+                "waiting-stripe/",
                 self.stripe_waiting_view.as_view(),
                 name="stripe-waiting",
             ),
             path(
-                "stripe/payment-status/",
+                "payment-status-stripe/",
                 self.stripe_payment_status_view.as_view(),
                 name="stripe-payment-status",
             ),
             path(
-                "stripe/cancel/<int:basket_id>/",
+                "cancel-stripe/<int:basket_id>/",
                 self.stripe_cancel_view.as_view(),
                 name="stripe-cancel",
             ),
