@@ -31,7 +31,7 @@ class PaymentItem:
         self.tax_code = kwargs.get("tax_code")
 
 
-class Facade(object):
+class Facade:
 
     stripe_client = None
 
@@ -46,6 +46,60 @@ class Facade(object):
 
     def _get_extra_session_params(self, session_params, session_line_items):
         return {}  # Customize at will!
+
+    def _get_invoice_account_tax_ids(self, session_params, session_line_items):
+        return None  # Customize at will!
+
+    def _get_invoice_custom_fields(self, session_params, session_line_items):
+        return None  # Customize at will!
+
+    def _get_invoice_description(self, session_params, session_line_items):
+        return settings.STRIPE_INVOICE_DESCRIPTION  # Customize at will!
+
+    def _get_invoice_footer(self, session_params, session_line_items):
+        return settings.STRIPE_INVOICE_FOOTER  # Customize at will!
+
+    def _get_invoice_issuer(self, session_params, session_line_items):
+        return None  # Customize at will!
+
+    def _get_invoice_metadata(self, session_params, session_line_items):
+        return None  # Customize at will!
+
+    def _get_invoice_rendering_options(self, session_params, session_line_items):
+        display_tax_amounts = settings.STRIPE_INVOICE_DISPLAY_TAX_AMOUNTS
+        amount_tax_display = (
+            "include_inclusive_tax" if display_tax_amounts else "exclude_tax"
+        )
+        return {"amount_tax_display": amount_tax_display}  # Customize at will!
+
+    def _get_invoice_data(self, session_params, session_line_items):
+        return {
+            "account_tax_ids": self._get_invoice_account_tax_ids(
+                session_params, session_line_items
+            ),
+            "custom_fields": self._get_invoice_custom_fields(
+                session_params, session_line_items
+            ),
+            "description": self._get_invoice_description(
+                session_params, session_line_items
+            ),
+            "footer": self._get_invoice_footer(session_params, session_line_items),
+            "issuer": self._get_invoice_issuer(session_params, session_line_items),
+            "metadata": self._get_invoice_metadata(session_params, session_line_items),
+            "rendering_options": self._get_invoice_rendering_options(
+                session_params, session_line_items
+            ),
+        }
+
+    def _get_invoice_session_params(self, session_params, session_line_items):
+        invoice_data = self._get_invoice_data(session_params, session_line_items)
+        invoice_session_params = {
+            "invoice_creation": {
+                "enabled": True,
+                "invoice_data": invoice_data,
+            }
+        }
+        return invoice_session_params
 
     def _get_tax_session_params(self, session_params, session_line_items):
         tax_session_params = {
@@ -70,7 +124,7 @@ class Facade(object):
     def _get_cancel_url(self, basket):
         return self._get_checkout_step_url(
             settings.STRIPE_CANCEL_URL,
-            "stripe-cancel",
+            "cancel",
             basket_id=basket.id,
         )
 
@@ -83,19 +137,19 @@ class Facade(object):
     def _get_payment_status_url(self):
         return self._get_checkout_step_url(
             settings.STRIPE_PAYMENT_STATUS_URL,
-            "stripe-payment-status",
+            "payment-status",
         )
 
     def _get_waiting_for_payment_url(self):
         return self._get_checkout_step_url(
             settings.STRIPE_WAITING_FOR_PAYMENT_URL,
-            "stripe-waiting",
+            "waiting",
         )
 
     def _get_order_preview_url(self, basket):
         return self._get_checkout_step_url(
             settings.STRIPE_ORDER_PREVIEW_URL,
-            "stripe-preview",
+            "preview",
             basket_id=basket.id,
         )
 
@@ -144,6 +198,12 @@ class Facade(object):
                 session_params, session_line_items
             )
             session_params.update(tax_session_params)
+
+        if settings.STRIPE_ENABLE_INVOICE_GENERATION:
+            invoice_session_params = self._get_invoice_session_params(
+                session_params, session_line_items
+            )
+            session_params.update(invoice_session_params)
 
         extra_session_params = self._get_extra_session_params(
             session_params, session_line_items

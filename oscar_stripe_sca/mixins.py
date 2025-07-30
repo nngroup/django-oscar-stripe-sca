@@ -1,9 +1,16 @@
+from decimal import Decimal as D
+
 import logging
 
+from django.conf import settings as django_settings
 from django.contrib import messages
+from django.utils.decorators import method_decorator
 from django.utils.module_loading import import_string
 from django.utils.translation import gettext_lazy as _
+from django.views.decorators.csrf import csrf_exempt
 
+from oscar.apps.checkout.exceptions import PassedSkipCondition
+from oscar.core import prices
 from oscar.core.loading import get_class, get_model
 from oscar.core.exceptions import ModuleNotFoundError
 
@@ -26,8 +33,13 @@ TaxInclusiveFixedPrice = get_class("partner.prices", "TaxInclusiveFixedPrice")
 UnableToPlaceOrder = get_class("order.exceptions", "UnableToPlaceOrder")
 
 
-class StripePaymentMixin(object):
+class CSRFExemptMixin:
+    @method_decorator(csrf_exempt)
+    def dispatch(self, *args, **kwargs):
+        return super().dispatch(*args, **kwargs)
 
+
+class StripePaymentMixin:
     def __init__(self, *args, **kwargs):
         self.facade = Facade()
 
@@ -35,7 +47,7 @@ class StripePaymentMixin(object):
         try:
             basket = Basket.objects.get(id=basket_id, status=Basket.FROZEN)
         except Basket.DoesNotExist:
-            logger.warning("Unable to load frozen basket with ID %s", basket_id)
+            logger.warning("*** Unable to load frozen basket with ID %s", basket_id)
             if request:
                 messages.error(
                     request,
@@ -52,8 +64,79 @@ class StripePaymentMixin(object):
 
         return basket
 
-    def build_submission(self, basket, **kwargs):
+    def compute_surcharges(self, request, basket, shipping_charge, submission=None):
+        applicator_args = [request]
+        if submission:
+            applicator_args.append(submission)
+        applicator = SurchargeApplicator(*applicator_args)
+
+        return applicator.get_applicable_surcharges(
+            basket, shipping_charge=shipping_charge
+        )
+
+    def get_order_totals(self, basket, shipping_charge, surcharges=None, **kwargs):
+        order_total = super().get_order_totals(
+            basket, shipping_charge, surcharges, **kwargs
+        )
+
+        # In the case of a zero-sum basket, Oscar may return `None` above
+        if not order_total:
+            currency = basket.currency or django_settings.OSCAR_DEFAULT_CURRENCY
+            excl_tax = incl_tax = D("0.00")
+            order_total = prices.Price(
+                currency=currency, excl_tax=excl_tax, incl_tax=incl_tax
+            )
+
+        logger.info(f"*** get_order_totals: {order_total}")
+
+        return order_total
+
+    def is_payment_required(self, request=None, basket=None):
+        logger.debug("*** Checking if payment is actually required...")
+
+        request = request or self.request
+        basket = basket or request.basket
+        currency = basket.currency or django_settings.OSCAR_DEFAULT_CURRENCY
+
+        shipping_address = self.get_shipping_address(basket)
+        shipping_method = self.get_shipping_method(basket, shipping_address)
+        if shipping_method:
+            shipping_charge = shipping_method.calculate(basket)
+        else:
+            shipping_charge = prices.Price(
+                currency=currency, excl_tax=D("0.00"), tax=D("0.00")
+            )
+
+        surcharges = self.compute_surcharges(request, basket, shipping_charge)
+        total = self.get_order_totals(basket, shipping_charge, surcharges)
+        result = total.excl_tax != D("0.00")
+        logger.debug(f"*** is_payment_required: {result}")
+
+        return result
+
+    def is_shipping_required(self, request=None, basket=None):
+        logger.debug("*** Checking if shipping is actually required...")
+
+        request = request or self.request
+        basket = basket or request.basket
+        result = basket.is_shipping_required()
+        logger.debug(f"*** is_shipping_required: {result}")
+
+        return result
+
+    def get_shipping_method_by_code(self, code, basket):
+        shipping_methods = ShippingRepository().get_shipping_methods(basket)
+        for shipping_method in shipping_methods:
+            if shipping_method.code == code:
+                return shipping_method
+
+    def build_submission(self, **kwargs):
+        logger.debug("*** Building submission...")
+
+        request = kwargs.pop("request", self.request)
+        basket = kwargs.pop("basket", request.basket)
         user = kwargs.pop("user", basket.owner)
+
         shipping_address = self.get_shipping_address(basket)
         shipping_method = kwargs.pop(
             "shipping_method", self.get_shipping_method(basket, shipping_address)
@@ -71,18 +154,14 @@ class StripePaymentMixin(object):
         }
 
         if not shipping_method:
-            order_total = shipping_charge = surcharges = None
+            shipping_charge = surcharges = order_total = None
         else:
-            request = kwargs.pop("request", None)
             shipping_charge = shipping_method.calculate(basket)
-            surcharges = SurchargeApplicator(
-                request, submission
-            ).get_applicable_surcharges(basket, shipping_charge=shipping_charge)
+            surcharges = self.compute_surcharges(
+                request, basket, shipping_charge, submission=submission
+            )
             order_total = self.get_order_totals(
-                basket,
-                shipping_charge=shipping_charge,
-                surcharges=surcharges,
-                **kwargs,
+                basket, shipping_charge, surcharges, **kwargs
             )
 
         submission.update(
@@ -123,7 +202,7 @@ class StripePaymentMixin(object):
 class TwoStepPaymentMixin(StripePaymentMixin):
 
     def submit_basket(self, basket):
-        submission = self.build_submission(basket)
+        submission = self.build_submission(basket=basket)
         return self.submit(**submission)
 
     def handle_payment(self, order_number, order_total, **kwargs):
@@ -143,33 +222,16 @@ class TwoStepPaymentMixin(StripePaymentMixin):
 
 class OneStepPaymentMixin(StripePaymentMixin):
 
-    def _get_shipping_method(self, basket, code):
-        shipping_methods = ShippingRepository().get_shipping_methods(basket)
-        for shipping_method in shipping_methods:
-            if shipping_method.code == code:
-                return shipping_method
-
-    def _retrieve_shipping_method(self, basket, payment_intent_data):
-        try:
-            code = payment_intent_data["metadata"]["shipping_method"]
-        except KeyError:
-            return None
-        else:
-            return self._get_shipping_method(basket, code)
-
-    def build_submission(self, basket, payment_intent_data, **kwargs):
-        shipping_method = self._retrieve_shipping_method(basket, payment_intent_data)
-        logger.debug(f"*** shipping_method: {shipping_method}")
-
-        return super().build_submission(basket=basket, shipping_method=shipping_method)
-
-    def submit_basket(self, basket, payment_intent_data):
-        submission = self.build_submission(basket, payment_intent_data)
-        self.add_payment_details(
-            order_total=submission["order_total"],
-            payment_intent_id=payment_intent_data["id"],
+    def submit_basket(self, basket, shipping_method, payment_intent_id=None):
+        submission = self.build_submission(
+            basket=basket, shipping_method=shipping_method
         )
-        self.submit(**submission)
+        if payment_intent_id:
+            self.add_payment_details(
+                order_total=submission["order_total"],
+                payment_intent_id=payment_intent_id,
+            )
+        return self.submit(**submission)
 
     def submit(
         self,
@@ -223,3 +285,5 @@ class OneStepPaymentMixin(StripePaymentMixin):
                 msg,
                 exc_info=True,
             )
+
+        return order_number
