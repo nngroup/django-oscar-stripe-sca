@@ -37,11 +37,13 @@ Facade = import_string(settings.STRIPE_FACADE_CLASS_PATH)
 Basket = get_model("basket", "Basket")
 Line = get_model("basket", "Line")
 NoShippingRequired = get_class("shipping.methods", "NoShippingRequired")
+Order = get_model("order", "Order")
 OrderPlacementMixin = get_class("checkout.mixins", "OrderPlacementMixin")
 PaymentEvent = get_model("order", "PaymentEvent")
 
 
 class StripeSCAZeroView(OneStepPaymentMixin, OrderPlacementMixin, generic.View):
+    """A view to bypass Stripe in the case of a zero-cost order."""
 
     def _get_regular_checkout_url(self, request, *args, **kwargs):
         return reverse_lazy("checkout:index")
@@ -186,9 +188,10 @@ class StripeSCAWebhookView(
         payload = request.body
         logger.info(f"*** Received Stripe webhook payload: {payload}")
 
+        facade = Facade()
         signature = request.headers.get("stripe-signature")
         try:
-            event = Facade().construct_event(payload, signature)
+            event = facade.construct_event(payload, signature)
         except SignatureVerificationError:
             logger.error(f"*** Stripe signature verification error!")
             return HttpResponse(status=400)
@@ -240,6 +243,8 @@ class StripeSCAPaymentStatusView(generic.View):
         return is_successful, order_id
 
     def get(self, request, *args, **kwargs):
+        logger.debug("*** StripeSCAPaymentStatusView.get()")
+
         session = self.request.session
 
         checkout_session_id = session["stripe_session_id"]
@@ -248,6 +253,7 @@ class StripeSCAPaymentStatusView(generic.View):
         )
         is_successful, order_id = self._check_payment_status(payment_intent_id)
         if is_successful:
+            logger.debug(f"*** Saving order ID in session: {order_id}")
             session["checkout_order_id"] = order_id  # for the ThankYou view
 
         response_data = {
@@ -271,6 +277,8 @@ class StripeSCAWaitingView(generic.TemplateView):
         return settings.STRIPE_PAYMENT_POLLING_INTERVAL
 
     def get_context_data(self, **kwargs):
+        logger.debug("*** StripeSCAWaitingView.get_context_data()")
+
         context_data = super().get_context_data(**kwargs)
 
         payment_status_url = self._get_payment_status_url()
@@ -298,7 +306,7 @@ class StripeSCACancelView(StripePaymentMixin, generic.RedirectView):
         basket = self.load_frozen_basket(basket_id, request.user, request)
         if basket:
             basket.thaw()
-            logger.info(
+            logger.debug(
                 "*** Stripe transaction cancelled, basket #%s thawed",
                 basket.id,
             )
@@ -313,18 +321,24 @@ class StripeSCAThankYouView(DefaultThankYouView):
     context_object_name = "order"
 
     def get_object(self, queryset=None):
+        logger.debug("*** StripeSCAThankYouView.get_object()")
+
         order = None
         session = self.request.session
 
         if self.request.user.is_superuser:
+            logger.debug("*** Superuser mode: inspecting kwargs...")
             kwargs = {}
             if "order_number" in self.request.GET:
                 kwargs["number"] = self.request.GET["order_number"]
             elif "order_id" in self.request.GET:
                 kwargs["id"] = self.request.GET["order_id"]
-            order = Order._default_manager.filter(**kwargs).first()
+            if kwargs:
+                logger.debug("*** Superuser mode: fetching order from kwargs...")
+                order = Order._default_manager.filter(**kwargs).first()
 
         if not order:
+            logger.debug("*** searching order in session...")
             if "checkout_order_id" in session:
                 order_id = session["checkout_order_id"]
                 logger.debug(f"*** order_id: {order_id}")

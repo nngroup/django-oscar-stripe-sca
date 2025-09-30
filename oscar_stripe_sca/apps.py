@@ -83,5 +83,5 @@ class StripeSCACheckoutConfig(CheckoutConfig):
                 self.payment_status_view.as_view(),
                 name="payment-status",
             ),
-            path("thank-you/", self.thankyou_view.as_view(), name="thank-you"),
+            path("thank-you/", self.thank_you_view.as_view(), name="thank-you"),
         ]

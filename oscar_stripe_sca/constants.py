@@ -10,6 +10,12 @@ PAYMENT_METHOD_TYPE_CARD = "card"
 CAPTURE_METHOD_MANUAL = "manual"
 CAPTURE_METHOD_AUTOMATIC = "automatic"
 
+INVOICE_NUMBERING_MANUAL = "manual"
+INVOICE_NUMBERING_AUTOMATIC = "automatic"
+
+INVOICE_SENDING_MANUAL = "manual"
+INVOICE_SENDING_AUTOMATIC = "automatic"
+
 # See: https://support.stripe.com/questions/which-zero-decimal-currencies-does-stripe-support
 ZERO_DECIMAL_CURRENCIES = (
     "BIF",  # Burundian Franc
