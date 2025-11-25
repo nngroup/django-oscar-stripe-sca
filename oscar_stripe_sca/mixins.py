@@ -1,4 +1,4 @@
-from decimal import Decimal as D
+from decimal import Decimal
 
 import logging
 
@@ -15,7 +15,11 @@ from oscar.core.loading import get_class, get_model
 from oscar.core.exceptions import ModuleNotFoundError
 
 from . import settings
-from .constants import PAYMENT_EVENT_PURCHASE, PAYMENT_METHOD_STRIPE
+from .constants import (
+    INVOICE_NUMBERING_MANUAL,
+    PAYMENT_EVENT_PURCHASE,
+    PAYMENT_METHOD_STRIPE,
+)
 
 
 logger = logging.getLogger(settings.STRIPE_LOGGER_NAME)
@@ -82,7 +86,7 @@ class StripePaymentMixin:
         # In the case of a zero-sum basket, Oscar may return `None` above
         if not order_total:
             currency = basket.currency or django_settings.OSCAR_DEFAULT_CURRENCY
-            excl_tax = incl_tax = D("0.00")
+            excl_tax = incl_tax = Decimal("0.00")
             order_total = prices.Price(
                 currency=currency, excl_tax=excl_tax, incl_tax=incl_tax
             )
@@ -104,12 +108,12 @@ class StripePaymentMixin:
             shipping_charge = shipping_method.calculate(basket)
         else:
             shipping_charge = prices.Price(
-                currency=currency, excl_tax=D("0.00"), tax=D("0.00")
+                currency=currency, excl_tax=Decimal("0.00"), tax=Decimal("0.00")
             )
 
         surcharges = self.compute_surcharges(request, basket, shipping_charge)
         total = self.get_order_totals(basket, shipping_charge, surcharges)
-        result = total.excl_tax != D("0.00")
+        result = total.excl_tax != Decimal("0.00")
         logger.debug(f"*** is_payment_required: {result}")
 
         return result
@@ -184,6 +188,8 @@ class StripePaymentMixin:
         payment_source_type, __ = PaymentSourceType.objects.get_or_create(
             name=PAYMENT_METHOD_STRIPE
         )
+
+        # Record the payment source
         payment_source = PaymentSource(
             source_type=payment_source_type,
             amount_allocated=order_total.incl_tax,
@@ -192,6 +198,8 @@ class StripePaymentMixin:
             reference=payment_intent_id,
         )
         self.add_payment_source(payment_source)
+
+        # Record the payment event
         self.add_payment_event(
             PAYMENT_EVENT_PURCHASE,
             order_total.incl_tax,

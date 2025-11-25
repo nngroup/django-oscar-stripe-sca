@@ -1,4 +1,5 @@
-from decimal import Decimal as D, ROUND_HALF_UP
+from datetime import datetime as dt, timezone as tz
+from decimal import Decimal, ROUND_HALF_UP
 import logging
 
 from django.apps import apps
@@ -11,6 +12,10 @@ from . import settings
 from .constants import (
     CAPTURE_METHOD_AUTOMATIC,
     CAPTURE_METHOD_MANUAL,
+    INVOICE_NUMBERING_AUTOMATIC,
+    INVOICE_NUMBERING_MANUAL,
+    INVOICE_SENDING_AUTOMATIC,
+    INVOICE_SENDING_MANUAL,
     PAYMENT_METHOD_TYPE_CARD,
     SESSION_MODE_PAYMENT,
     ZERO_DECIMAL_CURRENCIES,
@@ -18,6 +23,7 @@ from .constants import (
 from .exceptions import MultipleTaxCodesInBasketError, PaymentCaptureError
 
 
+Basket = apps.get_model("basket", "Basket")
 Order = apps.get_model("order", "Order")
 PaymentSource = apps.get_model("payment", "Source")
 
@@ -63,7 +69,9 @@ class Facade:
         return None  # Customize at will!
 
     def _get_invoice_metadata(self, session_params, session_line_items):
-        return None  # Customize at will!
+        return {
+            "numbering": settings.STRIPE_INVOICE_NUMBERING
+        }
 
     def _get_invoice_rendering_options(self, session_params, session_line_items):
         display_tax_amounts = settings.STRIPE_INVOICE_DISPLAY_TAX_AMOUNTS
@@ -93,9 +101,14 @@ class Facade:
 
     def _get_invoice_session_params(self, session_params, session_line_items):
         invoice_data = self._get_invoice_data(session_params, session_line_items)
+
+        # Fully-automatic invoice creation may only be enabled
+        # if Stripe is in charge of numbering.
+        enabled = invoice_data["metadata"]["numbering"] == INVOICE_NUMBERING_AUTOMATIC
+
         invoice_session_params = {
             "invoice_creation": {
-                "enabled": True,
+                "enabled": enabled,
                 "invoice_data": invoice_data,
             }
         }
@@ -181,6 +194,7 @@ class Facade:
 
         session_params = {
             "mode": session_mode,
+            "customer_creation": "always",
             "customer_email": customer_email,
             "payment_method_types": [PAYMENT_METHOD_TYPE_CARD],
             "line_items": session_line_items,
@@ -223,9 +237,9 @@ class Facade:
         for voucher in basket.grouped_voucher_discounts:
             voucher_name = voucher["voucher"].name
             voucher_discount = voucher["discount"]
-            discounts.append(f"{voucher_name} ({voucher_discount})")
+            discounts.append(f"{voucher_name}:{voucher_discount}")
 
-        return ", ".join(discounts)
+        return ",".join(discounts)
 
     def build_session_metadata(self, basket, shipping_method, session_line_items):
         session_metadata = {
@@ -304,9 +318,13 @@ class Facade:
 
         """
         if currency.upper() in ZERO_DECIMAL_CURRENCIES:
-            return int(D(str(price)).quantize(D("1"), ROUND_HALF_UP))
+            return int(Decimal(str(price)).quantize(
+                Decimal("1"), ROUND_HALF_UP
+            ))
         else:
-            return int(D(str(price)).quantize(D("0.01"), ROUND_HALF_UP) * 100)
+            return int(Decimal(str(price)).quantize(
+                Decimal("0.01"), ROUND_HALF_UP
+            ) * 100)
 
     def prepare_line_items(self, raw_line_items, order_total):
         prepared_line_items = []
@@ -361,7 +379,7 @@ class Facade:
                 price_incl_tax, _, quantity = prices
                 raw_line_items.append(
                     PaymentItem(
-                        title=line.product.title,
+                        title=line.product.get_title(),
                         price_incl_tax=price_incl_tax,
                         price_currency=line.price_currency,
                         quantity=quantity,
@@ -411,11 +429,23 @@ class Facade:
 
         return session
 
-    def retrieve_checkout_session(self, checkout_session_id):
+    def retrieve_checkout_session(self, checkout_session_id=None, payment_intent_id=None):
+        if not checkout_session_id:
+            if not payment_intent_id:
+                raise ValueError()
+
+            params = {"payment_intent": payment_intent_id}
+            return self.stripe_client.checkout.sessions.list(params=params).data[0]
+
         return self.stripe_client.checkout.sessions.retrieve(checkout_session_id)
 
+    def retrieve_checkout_session_lines(self, checkout_session):
+        return self.stripe_client.checkout.sessions.line_items.list(checkout_session.id)
+
     def retrieve_payment_intent_id(self, checkout_session_id):
-        checkout_session = self.retrieve_checkout_session(checkout_session_id)
+        checkout_session = self.retrieve_checkout_session(
+            checkout_session_id=checkout_session_id
+        )
         return checkout_session.get("payment_intent")
 
     def retrieve_payment_intent(self, payment_intent_id=None, checkout_session_id=None):
@@ -481,6 +511,152 @@ class Facade:
             f"Payment for Order #{order.number} (ID: {order.id}) "
             f"was captured via Stripe (ref: {payment_intent_id})"
         )
+
+    def is_manual_invoicing_required(self):
+        return (
+            settings.STRIPE_ENABLE_INVOICE_GENERATION
+            and settings.STRIPE_INVOICE_NUMBERING == INVOICE_NUMBERING_MANUAL
+        )
+
+    def _get_next_invoice_number(self):
+        raise NotImplementedError  # Implement before calling!
+
+    def _get_invoice_product_type(self, product):
+        return product.get_product_class().name  # Customize at will!
+
+    def _get_invoice_product_title(self, product):
+        return product.get_title()  # Customize at will!
+
+    def create_invoice(self, payment_intent_id):
+        invoicer = self.stripe_client.invoices
+
+        # TODO: Refactor and test this!
+
+        self.logger.info("*** Fetching Stripe data...")
+        payment_intent = self.retrieve_payment_intent(
+            payment_intent_id=payment_intent_id
+        )
+        self.logger.debug(f"*** payment_intent_id: {payment_intent_id}")
+
+        # We retrieve the checkout session and payment metadata.
+        checkout_session = self.retrieve_checkout_session(
+            payment_intent_id=payment_intent_id
+        )
+        checkout_session_id = checkout_session.id
+        self.logger.debug(f"*** checkout_session_id: {checkout_session_id}")
+
+        self.logger.info(
+            f"*** Extracting and computing adjacent data..."
+        )
+        payment_metadata = payment_intent.metadata
+
+        # From that metadata, we retrieve the basket and the order.
+        basket_id = int(payment_metadata.basket_id)
+        self.logger.debug(f"*** basket_id: {basket_id}")
+
+        basket = Basket.objects.get(pk=basket_id)
+        order = basket.order_set.first()
+        order_id = order.id
+        order_number = order.number
+        self.logger.debug(f"*** order_id: {order_id}")
+        self.logger.debug(f"*** order_number: {order_number}")
+
+        # We can then retrieve the discounts that were applied...
+        coupons = []
+        raw_discount_data = payment_metadata.discounts
+        self.logger.debug(f"*** raw_discount_data: {raw_discount_data}")
+
+        discounts = raw_discount_data.split(",")
+        for discount in discounts:
+            try:
+                discount_name, discount_amount = discount.split(":")
+            except ValueError:
+                continue
+            else:
+                # ... and create ad-hoc Stripe coupons for them.
+                amount_off = int(Decimal(discount_amount) * 100)
+                coupon = self.stripe_client.coupons.create({
+                    "name": discount_name,
+                    "amount_off": amount_off,
+                    "currency": payment_intent.currency,
+                    "metadata": {
+                        "checkout_session_id": checkout_session_id,
+                        "payment_intent_id": payment_intent_id,
+                        "basket_id": basket_id,
+                        "order_id": order_id,
+                        "order_number": order_number,
+                    }
+                })
+                coupons.append(coupon)
+
+        # And we finally create the invoice.
+        self.logger.info(
+            f"*** Creating invoice for checkout session: {checkout_session.id}"
+        )
+        today = round(dt.now(tz.utc).timestamp())
+        number = self._get_next_invoice_number()  # overridden in the project
+        customer = checkout_session.customer
+        params = {
+            "number": number,
+            "customer": customer,
+            "collection_method": "send_invoice",
+            "due_date": today,
+            "automatic_tax": {
+                "enabled": settings.STRIPE_ENABLE_TAX_COMPUTATION,
+            },
+        }
+        if coupons:
+            params.update(
+                {"discounts": [
+                    {"coupon": coupon.id} for coupon in coupons
+                ]}
+            )
+        invoice = invoicer.create(params=params)
+
+        invoice_id = invoice.id
+        invoice_number = invoice.number
+        self.logger.debug(f"*** invoice_id: {invoice_id}")
+        self.logger.debug(f"*** invoice_number: {invoice_number}")
+
+        # We now add lines to the invoice, for each one of the order.
+        invoice_info = f"{invoice_id} (number: {invoice.number})"
+        self.logger.info(f"*** Adding lines to invoice: {invoice_info}")
+        invoice_lines = []
+        order_lines = order.lines.all()
+        for order_line in order_lines:
+            product = order_line.product
+            product_type = self._get_invoice_product_type(product)
+            product_title = self._get_invoice_product_title(product)
+            description = f"[{product_type}] {product_title}"
+            amount = int(order_line.unit_price_excl_tax * 100)
+            invoice_lines.append({
+                "description": description,
+                "amount": amount,
+            })
+        params={"lines": invoice_lines}
+        invoicer.add_lines(invoice=invoice_id, params=params)
+
+        # The invoice may now be finalized...
+        self.logger.info(f"*** Finalizing invoice: {invoice_info}")
+        invoicer.finalize_invoice(invoice=invoice_id)
+
+        # ... linked to its payment...
+        self.logger.info(f"*** Attaching payment to invoice: {invoice_info}")
+        params = {"payment_intent": payment_intent_id}
+        invoicer.attach_payment(invoice_id, params=params)
+
+        # ... and sent, *if* that should be done through Stripe.
+        if settings.STRIPE_INVOICE_SENDING == INVOICE_SENDING_AUTOMATIC:
+            self.logger.info(f"*** Sending invoice: {invoice_info}")
+            invoicer.send_invoice(invoice_id)
+
+        return invoice_id
+
+    def retrieve_invoice(self, invoice_id):
+        return self.stripe_client.invoices.retrieve(invoice_id)
+
+    def record_invoice(self, invoice_id, payment_intent_id):
+        raise NotImplementedError  # Implement before calling!
 
     def construct_event(self, payload, sig_header):
         params = {
