@@ -1,4 +1,5 @@
 import logging
+from http import HTTPStatus
 
 from django.contrib import messages
 from django.core.exceptions import PermissionDenied
@@ -189,31 +190,50 @@ class StripeSCAWebhookView(
         logger.info(f"*** Received Stripe webhook payload: {payload}")
 
         facade = Facade()
+
         signature = request.headers.get("stripe-signature")
         try:
             event = facade.construct_event(payload, signature)
         except SignatureVerificationError:
-            logger.error(f"*** Stripe signature verification error!")
-            return HttpResponse(status=400)
+            logger.error("*** Stripe signature verification error!")
+            return HttpResponse(status=HTTPStatus.BAD_REQUEST)
         else:
-            event_type = event.type
-            logger.info(f"*** Stripe event: [{event_type}] --> {event}")
+            if not facade.is_event_relevant(event):
+                logger.info("*** Event is irrelevant, skipping...")
+                return HttpResponse(status=HTTPStatus.OK)
 
-        if event.type == "payment_intent.succeeded":
-            payment_intent_data = event.data.object
-            metadata = payment_intent_data["metadata"]
-            basket_id = metadata["basket_id"]
-            basket = self.load_frozen_basket(basket_id)
-            shipping_code = metadata["shipping_method"]
-            shipping_method = self.get_shipping_method_by_code(shipping_code, basket)
-            payment_intent_id = payment_intent_data["id"]
+        event_type = event.type
+        event_data = event.data.object
+        event_metadata = event_data.get("metadata")
+        logger.info(f"*** Stripe event: [{event_type}] --> {event_data}")
+
+        if event_type == "payment_intent.succeeded":
+            payment_intent_id = event_data["id"]
+
+            try:
+                basket_id = event_metadata["basket_id"]
+            except KeyError:
+                logger.error("*** No basket id in event metadata, aborting!")
+                return HttpResponse(status=HTTPStatus.OK)
+            else:
+                basket = self.load_frozen_basket(basket_id)
+
+            try:
+                shipping_code = event_metadata["shipping_method"]
+            except KeyError:
+                logger.error("*** No shipping code in event metadata, aborting!")
+                return HttpResponse(status=HTTPStatus.OK)
+            else:
+                shipping_method = self.get_shipping_method_by_code(
+                    shipping_code, basket
+                )
 
             self.submit_basket(
                 basket, shipping_method, payment_intent_id
             )  # from OneStepPaymentMixin
 
         logger.info("*** Stripe webhook processing complete")
-        return HttpResponse(status=200)
+        return HttpResponse(status=HTTPStatus.OK)
 
 
 class StripeSCAPaymentStatusView(generic.View):
