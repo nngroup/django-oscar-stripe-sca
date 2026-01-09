@@ -527,7 +527,7 @@ class Facade:
     def _get_invoice_product_title(self, product):
         return product.get_title()  # Customize at will!
 
-    def create_invoice(self, payment_intent_id):
+    def create_invoice(self, payment_intent_id, invoice_number=None):
         invoicer = self.stripe_client.invoices
 
         # TODO: Refactor and test this!
@@ -594,7 +594,7 @@ class Facade:
             f"*** Creating invoice for checkout session: {checkout_session.id}"
         )
         today = round(dt.now(tz.utc).timestamp())
-        number = self._get_next_invoice_number()  # overridden in the project
+        number = invoice_number or self._get_next_invoice_number()  # overridden in the project
         customer = checkout_session.customer
         params = {
             "number": number,
