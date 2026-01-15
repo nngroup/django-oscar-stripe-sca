@@ -16,8 +16,10 @@ from .constants import (
     INVOICE_NUMBERING_MANUAL,
     INVOICE_SENDING_AUTOMATIC,
     INVOICE_SENDING_MANUAL,
+    OSCAR,
     PAYMENT_METHOD_TYPE_CARD,
     SESSION_MODE_PAYMENT,
+    SHOPPING_CART_SYSTEM,
     ZERO_DECIMAL_CURRENCIES,
 )
 from .exceptions import MultipleTaxCodesInBasketError, PaymentCaptureError
@@ -243,7 +245,7 @@ class Facade:
 
     def build_session_metadata(self, basket, shipping_method, session_line_items):
         session_metadata = {
-            "scs": "oscar",
+            SHOPPING_CART_SYSTEM: OSCAR,
             "basket_id": basket.id,
             "shipping_method": shipping_method.code,
         }
@@ -668,3 +670,19 @@ class Facade:
             params.update({"secret": secret})
 
         return self.stripe_client.construct_event(**params)
+
+    def is_event_relevant(self, event):
+        """Ensure the received event is relevant before processing it.
+
+        This default implementation only checks the event metadata to
+        confirm that it was sent in response to an Oscar-generated
+        checkout session.
+
+        """
+        event_data = event.data.object
+        try:
+            metadata = event_data["metadata"]
+        except KeyError:
+            return False
+        else:
+            return metadata.get(SHOPPING_CART_SYSTEM) == OSCAR

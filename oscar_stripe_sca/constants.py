@@ -61,3 +61,6 @@ for origin in STRIPE_WEBHOOK_ORIGINS:
 
 # TODO: Fetch those IP addresses automatically?
 # See: https://docs.stripe.com/ips#downloading-ip-address-lists
+
+SHOPPING_CART_SYSTEM = "scs"
+OSCAR = "oscar"
