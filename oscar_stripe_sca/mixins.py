@@ -64,6 +64,7 @@ class StripePaymentMixin:
             basket.strategy = StrategySelector().strategy(request)
 
         # Re-apply any offers
+        user = user or basket.owner
         OfferApplicator().apply(basket, user=user, request=request)
 
         return basket
