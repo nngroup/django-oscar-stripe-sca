@@ -360,7 +360,7 @@ class Facade:
                 tax_code = raw_line_item.tax_code
 
                 prepared_line_item = self._prepare_line_item(
-                    name, amount, currency, quantity
+                    name, amount, currency, quantity, tax_code
                 )
                 prepared_line_items.append(prepared_line_item)
 
