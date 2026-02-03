@@ -550,6 +550,7 @@ class Facade:
         self.logger.info(
             f"*** Extracting and computing adjacent data..."
         )
+        currency = payment_intent.currency
         payment_metadata = payment_intent.metadata
 
         # From that metadata, we retrieve the basket and the order.
@@ -580,7 +581,7 @@ class Facade:
                 coupon = self.stripe_client.coupons.create({
                     "name": discount_name,
                     "amount_off": amount_off,
-                    "currency": payment_intent.currency,
+                    "currency": currency,
                     "metadata": {
                         "checkout_session_id": checkout_session_id,
                         "payment_intent_id": payment_intent_id,
@@ -624,17 +625,35 @@ class Facade:
         invoice_info = f"{invoice_id} (number: {invoice.number})"
         self.logger.info(f"*** Adding lines to invoice: {invoice_info}")
         invoice_lines = []
+
         order_lines = order.lines.all()
         for order_line in order_lines:
+            amount = int(order_line.unit_price_excl_tax * 100)
             product = order_line.product
             product_type = self._get_invoice_product_type(product)
             product_title = self._get_invoice_product_title(product)
-            description = f"[{product_type}] {product_title}"
-            amount = int(order_line.unit_price_excl_tax * 100)
-            invoice_lines.append({
-                "description": description,
-                "amount": amount,
-            })
+            product_name = f"[{product_type}] {product_title}"
+            quantity = order_line.quantity
+
+            line = {
+                "description": product_name,
+                "price_data": {
+                    "currency": currency,
+                    "product_data": {
+                        "name": product_name,
+                    },
+                    "tax_behavior": "exclusive",
+                    "unit_amount": amount,
+                },
+                "quantity": quantity,
+            }
+            if settings.STRIPE_ENABLE_TAX_COMPUTATION:
+                tax_code = self._get_product_tax_code(product)
+                line["price_data"]["product_data"]["tax_code"] = tax_code
+
+            invoice_lines.append(line)
+
+        self.logger.debug(f"*** invoice_lines: {invoice_lines}")
         params={"lines": invoice_lines}
         invoicer.add_lines(invoice=invoice_id, params=params)
 
