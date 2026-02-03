@@ -33,7 +33,7 @@ PaymentSource = apps.get_model("payment", "Source")
 class PaymentItem:
     def __init__(self, **kwargs):
         self.title = kwargs.get("title")
-        self.price_incl_tax = kwargs.get("price_incl_tax")
+        self.price_excl_tax = kwargs.get("price_excl_tax")
         self.price_currency = kwargs.get("price_currency")
         self.quantity = kwargs.get("quantity")
         self.tax_code = kwargs.get("tax_code")
@@ -338,7 +338,7 @@ class Facade:
                     for raw_line_item in raw_line_items
                 ]
             )
-            amount = self._convert_to_cents(order_total.incl_tax, order_total.currency)
+            amount = self._convert_to_cents(order_total.excl_tax, order_total.currency)
             currency = order_total.currency
             quantity = 1
             tax_code = self._choose_tax_code(raw_line_items)
@@ -353,7 +353,7 @@ class Facade:
 
                 name = raw_line_item.title
                 amount = self._convert_to_cents(
-                    raw_line_item.price_incl_tax, raw_line_item.price_currency
+                    raw_line_item.price_excl_tax, raw_line_item.price_currency
                 )
                 currency = raw_line_item.price_currency
                 quantity = raw_line_item.quantity
@@ -378,11 +378,11 @@ class Facade:
         for line in basket.all_lines():
             # This loop splits line into discounted and non-discounted ones
             for prices in line.get_price_breakdown():
-                price_incl_tax, _, quantity = prices
+                _, price_excl_tax, quantity = prices
                 raw_line_items.append(
                     PaymentItem(
                         title=line.product.get_title(),
-                        price_incl_tax=price_incl_tax,
+                        price_excl_tax=price_excl_tax,
                         price_currency=line.price_currency,
                         quantity=quantity,
                         tax_code=self._get_product_tax_code(line.product),
@@ -394,7 +394,7 @@ class Facade:
             raw_line_items.append(
                 PaymentItem(
                     title=self.shipping_method.name,
-                    price_incl_tax=shipping_price.incl_tax,
+                    price_excl_tax=shipping_price.excl_tax,
                     price_currency=shipping_price.currency,
                     quantity=1,
                     tax_code=self._get_shipping_tax_code(),
