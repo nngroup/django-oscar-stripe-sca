@@ -565,6 +565,7 @@ class Facade:
         self.logger.debug(f"*** order_number: {order_number}")
 
         # We can then retrieve the discounts that were applied...
+        # (see: `_get_discount_metadata` method above)
         coupons = []
         raw_discount_data = payment_metadata.discounts
         self.logger.debug(f"*** raw_discount_data: {raw_discount_data}")
@@ -608,6 +609,8 @@ class Facade:
                 "enabled": settings.STRIPE_ENABLE_TAX_COMPUTATION,
             },
         }
+        # If we created coupons in the previous step,
+        # we now apply them to the invoice.
         if coupons:
             params.update(
                 {"discounts": [
@@ -621,40 +624,47 @@ class Facade:
         self.logger.debug(f"*** invoice_id: {invoice_id}")
         self.logger.debug(f"*** invoice_number: {invoice_number}")
 
-        # We now add lines to the invoice, for each one of the order.
+        # We now prepare line items to be bulk added to the invoice...
         invoice_info = f"{invoice_id} (number: {invoice.number})"
-        self.logger.info(f"*** Adding lines to invoice: {invoice_info}")
-        invoice_lines = []
+        self.logger.info(f"*** Adding line items to invoice: {invoice_info}")
+        line_items = []
 
+        # ... by iterating over the order lines...
         order_lines = order.lines.all()
         for order_line in order_lines:
-            amount = int(order_line.unit_price_excl_tax * 100)
+
+            # ... computing each one's description, quantity and amount...
             product = order_line.product
             product_type = self._get_invoice_product_type(product)
             product_title = self._get_invoice_product_title(product)
-            product_name = f"[{product_type}] {product_title}"
+            description = f"[{product_type}] {product_title}"
             quantity = order_line.quantity
+            amount = int(order_line.unit_price_excl_tax * 100)
 
-            line = {
-                "description": product_name,
+            # ... building the adequate Stripe data structure...
+            # (see: https://docs.stripe.com/api/invoice-line-item/bulk)
+            line_item = {
+                "description": description,
                 "price_data": {
                     "currency": currency,
                     "product_data": {
-                        "name": product_name,
+                        "name": description,
                     },
                     "tax_behavior": "exclusive",
                     "unit_amount": amount,
                 },
                 "quantity": quantity,
             }
+
+            # ... and adding tax-related information if needed.
             if settings.STRIPE_ENABLE_TAX_COMPUTATION:
                 tax_code = self._get_product_tax_code(product)
-                line["price_data"]["product_data"]["tax_code"] = tax_code
+                line_item["price_data"]["product_data"]["tax_code"] = tax_code
 
-            invoice_lines.append(line)
+            line_items.append(line_item)
 
-        self.logger.debug(f"*** invoice_lines: {invoice_lines}")
-        params={"lines": invoice_lines}
+        self.logger.debug(f"*** line_items: {line_items}")
+        params={"lines": line_items}
         invoicer.add_lines(invoice=invoice_id, params=params)
 
         # The invoice may now be finalized...
