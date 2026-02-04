@@ -79,7 +79,14 @@ class StripePaymentMixin:
             basket, shipping_charge=shipping_charge
         )
 
-    def get_order_totals(self, basket, shipping_charge, surcharges=None, **kwargs):
+    def get_order_totals(
+        self,
+        basket,
+        shipping_charge,
+        surcharges=None,
+        paid_tax_amount=None,
+        **kwargs
+    ):
         order_total = super().get_order_totals(
             basket, shipping_charge, surcharges, **kwargs
         )
@@ -92,7 +99,12 @@ class StripePaymentMixin:
                 currency=currency, excl_tax=excl_tax, incl_tax=incl_tax
             )
 
-        logger.info(f"*** get_order_totals: {order_total}")
+        # If tax was already paid on the basket, add it now
+        logger.info(f"*** get_order_totals: paid_tax_amount: {paid_tax_amount}")
+        if paid_tax_amount and paid_tax_amount > 0:
+            order_total.tax = Decimal(str(paid_tax_amount / 100))
+
+        logger.info(f"*** get_order_totals: order_total: {order_total}")
 
         return order_total
 
@@ -148,6 +160,8 @@ class StripePaymentMixin:
         )
         billing_address = self.get_billing_address(shipping_address)
 
+        paid_tax_amount = kwargs.pop("paid_tax_amount", 0)
+
         submission = {
             "user": user,
             "basket": basket,
@@ -166,7 +180,10 @@ class StripePaymentMixin:
                 request, basket, shipping_charge, submission=submission
             )
             order_total = self.get_order_totals(
-                basket, shipping_charge, surcharges, **kwargs
+                basket,
+                shipping_charge,
+                surcharges=surcharges,
+                paid_tax_amount=paid_tax_amount,
             )
 
         submission.update(
@@ -231,9 +248,17 @@ class TwoStepPaymentMixin(StripePaymentMixin):
 
 class OneStepPaymentMixin(StripePaymentMixin):
 
-    def submit_basket(self, basket, shipping_method, payment_intent_id=None):
+    def submit_basket(
+        self,
+        basket,
+        shipping_method,
+        paid_tax_amount=None,
+        payment_intent_id=None,
+    ):
         submission = self.build_submission(
-            basket=basket, shipping_method=shipping_method
+            basket=basket,
+            shipping_method=shipping_method,
+            paid_tax_amount=paid_tax_amount,
         )
         if payment_intent_id:
             self.add_payment_details(

@@ -33,7 +33,7 @@ PaymentSource = apps.get_model("payment", "Source")
 class PaymentItem:
     def __init__(self, **kwargs):
         self.title = kwargs.get("title")
-        self.price_incl_tax = kwargs.get("price_incl_tax")
+        self.price_excl_tax = kwargs.get("price_excl_tax")
         self.price_currency = kwargs.get("price_currency")
         self.quantity = kwargs.get("quantity")
         self.tax_code = kwargs.get("tax_code")
@@ -338,7 +338,7 @@ class Facade:
                     for raw_line_item in raw_line_items
                 ]
             )
-            amount = self._convert_to_cents(order_total.incl_tax, order_total.currency)
+            amount = self._convert_to_cents(order_total.excl_tax, order_total.currency)
             currency = order_total.currency
             quantity = 1
             tax_code = self._choose_tax_code(raw_line_items)
@@ -353,7 +353,7 @@ class Facade:
 
                 name = raw_line_item.title
                 amount = self._convert_to_cents(
-                    raw_line_item.price_incl_tax, raw_line_item.price_currency
+                    raw_line_item.price_excl_tax, raw_line_item.price_currency
                 )
                 currency = raw_line_item.price_currency
                 quantity = raw_line_item.quantity
@@ -378,11 +378,11 @@ class Facade:
         for line in basket.all_lines():
             # This loop splits line into discounted and non-discounted ones
             for prices in line.get_price_breakdown():
-                price_incl_tax, _, quantity = prices
+                _, price_excl_tax, quantity = prices
                 raw_line_items.append(
                     PaymentItem(
                         title=line.product.get_title(),
-                        price_incl_tax=price_incl_tax,
+                        price_excl_tax=price_excl_tax,
                         price_currency=line.price_currency,
                         quantity=quantity,
                         tax_code=self._get_product_tax_code(line.product),
@@ -394,7 +394,7 @@ class Facade:
             raw_line_items.append(
                 PaymentItem(
                     title=self.shipping_method.name,
-                    price_incl_tax=shipping_price.incl_tax,
+                    price_excl_tax=shipping_price.excl_tax,
                     price_currency=shipping_price.currency,
                     quantity=1,
                     tax_code=self._get_shipping_tax_code(),
@@ -550,6 +550,7 @@ class Facade:
         self.logger.info(
             f"*** Extracting and computing adjacent data..."
         )
+        currency = payment_intent.currency
         payment_metadata = payment_intent.metadata
 
         # From that metadata, we retrieve the basket and the order.
@@ -564,6 +565,7 @@ class Facade:
         self.logger.debug(f"*** order_number: {order_number}")
 
         # We can then retrieve the discounts that were applied...
+        # (see: `_get_discount_metadata` method above)
         coupons = []
         raw_discount_data = payment_metadata.discounts
         self.logger.debug(f"*** raw_discount_data: {raw_discount_data}")
@@ -580,7 +582,7 @@ class Facade:
                 coupon = self.stripe_client.coupons.create({
                     "name": discount_name,
                     "amount_off": amount_off,
-                    "currency": payment_intent.currency,
+                    "currency": currency,
                     "metadata": {
                         "checkout_session_id": checkout_session_id,
                         "payment_intent_id": payment_intent_id,
@@ -607,6 +609,8 @@ class Facade:
                 "enabled": settings.STRIPE_ENABLE_TAX_COMPUTATION,
             },
         }
+        # If we created coupons in the previous step,
+        # we now apply them to the invoice.
         if coupons:
             params.update(
                 {"discounts": [
@@ -620,22 +624,47 @@ class Facade:
         self.logger.debug(f"*** invoice_id: {invoice_id}")
         self.logger.debug(f"*** invoice_number: {invoice_number}")
 
-        # We now add lines to the invoice, for each one of the order.
+        # We now prepare line items to be bulk added to the invoice...
         invoice_info = f"{invoice_id} (number: {invoice.number})"
-        self.logger.info(f"*** Adding lines to invoice: {invoice_info}")
-        invoice_lines = []
+        self.logger.info(f"*** Adding line items to invoice: {invoice_info}")
+        line_items = []
+
+        # ... by iterating over the order lines...
         order_lines = order.lines.all()
         for order_line in order_lines:
+
+            # ... computing each one's description, quantity and amount...
             product = order_line.product
             product_type = self._get_invoice_product_type(product)
             product_title = self._get_invoice_product_title(product)
             description = f"[{product_type}] {product_title}"
+            quantity = order_line.quantity
             amount = int(order_line.unit_price_excl_tax * 100)
-            invoice_lines.append({
+
+            # ... building the adequate Stripe data structure...
+            # (see: https://docs.stripe.com/api/invoice-line-item/bulk)
+            line_item = {
                 "description": description,
-                "amount": amount,
-            })
-        params={"lines": invoice_lines}
+                "price_data": {
+                    "currency": currency,
+                    "product_data": {
+                        "name": description,
+                    },
+                    "tax_behavior": "exclusive",
+                    "unit_amount": amount,
+                },
+                "quantity": quantity,
+            }
+
+            # ... and adding tax-related information if needed.
+            if settings.STRIPE_ENABLE_TAX_COMPUTATION:
+                tax_code = self._get_product_tax_code(product)
+                line_item["price_data"]["product_data"]["tax_code"] = tax_code
+
+            line_items.append(line_item)
+
+        self.logger.debug(f"*** line_items: {line_items}")
+        params={"lines": line_items}
         invoicer.add_lines(invoice=invoice_id, params=params)
 
         # The invoice may now be finalized...

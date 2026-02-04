@@ -216,6 +216,7 @@ class StripeSCAWebhookView(
                 logger.error("*** No basket id in event metadata, aborting!")
                 return HttpResponse(status=HTTPStatus.OK)
             else:
+                logger.info(f"*** basket_id: {basket_id}")
                 basket = self.load_frozen_basket(basket_id)
 
             try:
@@ -224,12 +225,23 @@ class StripeSCAWebhookView(
                 logger.error("*** No shipping code in event metadata, aborting!")
                 return HttpResponse(status=HTTPStatus.OK)
             else:
+                logger.info(f"*** shipping_code: {shipping_code}")
                 shipping_method = self.get_shipping_method_by_code(
                     shipping_code, basket
                 )
 
+            try:
+                paid_tax_amount = event_data["amount_details"]["tax"]["total_tax_amount"]
+            except KeyError:
+                paid_tax_amount = 0
+            else:
+                logger.info(f"*** paid_tax_amount: {paid_tax_amount}")
+
             self.submit_basket(
-                basket, shipping_method, payment_intent_id
+                basket,
+                shipping_method,
+                paid_tax_amount=paid_tax_amount,
+                payment_intent_id=payment_intent_id,
             )  # from OneStepPaymentMixin
 
         logger.info("*** Stripe webhook processing complete")
