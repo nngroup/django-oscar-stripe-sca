@@ -564,7 +564,7 @@ class Facade:
         self.logger.debug(f"*** order_id: {order_id}")
         self.logger.debug(f"*** order_number: {order_number}")
 
-        # We can then retrieve the discounts that were applied...
+        # We can then retrieve the discounts that were applied, ...
         # (see: `_get_discount_metadata` method above)
         coupons = []
         raw_discount_data = payment_metadata.discounts
@@ -624,16 +624,16 @@ class Facade:
         self.logger.debug(f"*** invoice_id: {invoice_id}")
         self.logger.debug(f"*** invoice_number: {invoice_number}")
 
-        # We now prepare line items to be bulk added to the invoice...
+        # We now prepare line items to be bulk added to the invoice, ...
         invoice_info = f"{invoice_id} (number: {invoice.number})"
         self.logger.info(f"*** Adding line items to invoice: {invoice_info}")
         line_items = []
 
-        # ... by iterating over the order lines...
+        # ... by iterating over the order lines, ...
         order_lines = order.lines.all()
         for order_line in order_lines:
 
-            # ... computing each one's description, quantity and amount...
+            # ... computing each one's description, quantity and amount, ...
             product = order_line.product
             product_type = self._get_invoice_product_type(product)
             product_title = self._get_invoice_product_title(product)
@@ -641,7 +641,7 @@ class Facade:
             quantity = order_line.quantity
             amount = int(order_line.unit_price_excl_tax * 100)
 
-            # ... building the adequate Stripe data structure...
+            # ... building the adequate Stripe data structure, ...
             # (see: https://docs.stripe.com/api/invoice-line-item/bulk)
             line_item = {
                 "description": description,
@@ -663,20 +663,25 @@ class Facade:
 
             line_items.append(line_item)
 
+        # We can now add the line items to the invoice, ...
         self.logger.debug(f"*** line_items: {line_items}")
         params={"lines": line_items}
         invoicer.add_lines(invoice=invoice_id, params=params)
 
-        # The invoice may now be finalized...
+        # ... finalize it, ...
         self.logger.info(f"*** Finalizing invoice: {invoice_info}")
         invoicer.finalize_invoice(invoice=invoice_id)
 
-        # ... linked to its payment...
+        # ... link the payment to it, ...
         self.logger.info(f"*** Attaching payment to invoice: {invoice_info}")
         params = {"payment_intent": payment_intent_id}
         invoicer.attach_payment(invoice_id, params=params)
 
-        # ... and sent, *if* that should be done through Stripe.
+        # ... mark it as paid, ...
+        self.logger.info(f"*** Marking invoice as paid: {invoice_info}")
+        invoicer.pay(invoice=invoice_id)
+
+        # ... and finally send it, *if* that should be done through Stripe.
         if settings.STRIPE_INVOICE_SENDING == INVOICE_SENDING_AUTOMATIC:
             self.logger.info(f"*** Sending invoice: {invoice_info}")
             invoicer.send_invoice(invoice_id)
