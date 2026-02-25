@@ -203,11 +203,15 @@ class Facade:
             "metadata": session_metadata,
             "success_url": success_url,
             "cancel_url": cancel_url,
-            "payment_intent_data": {
-                "capture_method": capture_method,
-                "metadata": session_metadata,
-            },
         }
+
+        payment_intent_data = {
+            "metadata": session_metadata,
+            "capture_method": capture_method,
+        }
+        if settings.STRIPE_ENABLE_RECEIPT_EXPEDITION:
+            payment_intent_data["receipt_email"] = customer_email
+        session_params["payment_intent_data"] = payment_intent_data
 
         if settings.STRIPE_ENABLE_TAX_COMPUTATION:
             tax_session_params = self._get_tax_session_params(
