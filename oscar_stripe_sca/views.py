@@ -72,8 +72,12 @@ class StripeSCAZeroView(OneStepPaymentMixin, OrderPlacementMixin, generic.View):
     def post(self, request, *args, **kwargs):
         logger.info("*** Entering Stripe checkout funnel...")
 
-        if self._should_fulfill_order(request, *args, **kwargs):
-            logger.info("*** Order should be fulfilled right away")
+        bypass_checkout = self._should_fulfill_order(request, *args, **kwargs)
+
+        Facade().before_checkout_start(request, bypass_checkout=bypass_checkout)
+
+        if bypass_checkout:
+            logger.info("*** Bypassing checkout and fulfilling Order!")
 
             order_number = self._fulfill_order(request, *args, **kwargs)
             self.request.session["checkout_order_number"] = order_number
@@ -81,7 +85,7 @@ class StripeSCAZeroView(OneStepPaymentMixin, OrderPlacementMixin, generic.View):
             redirect_url = self._get_order_confirmation_url(request, *args, **kwargs)
 
         else:
-            logger.info("*** Order should be processed as usual")
+            logger.info("*** Processing Order as usual...")
 
             redirect_url = self._get_regular_checkout_url(request, *args, **kwargs)
 

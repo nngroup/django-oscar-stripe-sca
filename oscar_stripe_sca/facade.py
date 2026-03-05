@@ -435,6 +435,9 @@ class Facade:
 
         return session
 
+    def before_checkout_start(self, request, **kwargs):
+        pass  # Customize at will!
+
     def retrieve_checkout_session(self, checkout_session_id=None, payment_intent_id=None):
         if not checkout_session_id:
             if not payment_intent_id:
