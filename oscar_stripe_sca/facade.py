@@ -136,6 +136,15 @@ class Facade:
         )
         return step_url
 
+    def _should_generate_invoice(self, basket):
+        return settings.STRIPE_ENABLE_INVOICE_GENERATION  # Customize at will!
+
+    def _should_compute_tax(self, basket):
+        return settings.STRIPE_ENABLE_TAX_COMPUTATION  # Customize at will!
+
+    def _should_send_receipt(self, basket):
+        return settings.STRIPE_ENABLE_RECEIPT_EXPEDITION  # Customize at will!
+
     def _get_cancel_url(self, basket):
         return self._get_checkout_step_url(
             settings.STRIPE_CANCEL_URL,
@@ -209,17 +218,17 @@ class Facade:
             "metadata": session_metadata,
             "capture_method": capture_method,
         }
-        if settings.STRIPE_ENABLE_RECEIPT_EXPEDITION:
+        if self._should_send_receipt(basket):
             payment_intent_data["receipt_email"] = customer_email
         session_params["payment_intent_data"] = payment_intent_data
 
-        if settings.STRIPE_ENABLE_TAX_COMPUTATION:
+        if self._should_compute_tax(basket):
             tax_session_params = self._get_tax_session_params(
                 session_params, session_line_items
             )
             session_params.update(tax_session_params)
 
-        if settings.STRIPE_ENABLE_INVOICE_GENERATION:
+        if self._should_generate_invoice(basket):
             invoice_session_params = self._get_invoice_session_params(
                 session_params, session_line_items
             )
