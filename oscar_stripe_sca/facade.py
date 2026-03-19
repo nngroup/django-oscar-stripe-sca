@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from datetime import datetime as dt, timezone as tz
 from decimal import Decimal, ROUND_HALF_UP
 import logging
@@ -19,6 +20,7 @@ from .constants import (
     OSCAR,
     PAYMENT_METHOD_TYPE_CARD,
     SESSION_MODE_PAYMENT,
+    STRIPE,
     SHOPPING_CART_SYSTEM,
     ZERO_DECIMAL_CURRENCIES,
 )
@@ -30,17 +32,17 @@ Order = apps.get_model("order", "Order")
 PaymentSource = apps.get_model("payment", "Source")
 
 
+@dataclass
 class PaymentItem:
-    def __init__(self, **kwargs):
-        self.title = kwargs.get("title")
-        self.price_excl_tax = kwargs.get("price_excl_tax")
-        self.price_currency = kwargs.get("price_currency")
-        self.quantity = kwargs.get("quantity")
-        self.tax_code = kwargs.get("tax_code")
+    title: str
+    quantity: int
+    currency: str
+    price: Decimal
+    is_tax_included: bool
+    tax_code: str = None
 
 
 class Facade:
-
     stripe_client = None
 
     def __init__(self, api_key=None, api_version=None):
@@ -53,22 +55,22 @@ class Facade:
         self.logger = logging.getLogger(settings.STRIPE_LOGGER_NAME)
 
     def _get_extra_session_params(self, session_params, session_line_items):
-        return {}  # Customize at will!
+        return {}
 
     def _get_invoice_account_tax_ids(self, session_params, session_line_items):
-        return None  # Customize at will!
+        return None
 
     def _get_invoice_custom_fields(self, session_params, session_line_items):
-        return None  # Customize at will!
+        return None
 
     def _get_invoice_description(self, session_params, session_line_items):
-        return settings.STRIPE_INVOICE_DESCRIPTION  # Customize at will!
+        return settings.STRIPE_INVOICE_DESCRIPTION
 
     def _get_invoice_footer(self, session_params, session_line_items):
-        return settings.STRIPE_INVOICE_FOOTER  # Customize at will!
+        return settings.STRIPE_INVOICE_FOOTER
 
     def _get_invoice_issuer(self, session_params, session_line_items):
-        return None  # Customize at will!
+        return None
 
     def _get_invoice_metadata(self, session_params, session_line_items):
         return {
@@ -80,7 +82,7 @@ class Facade:
         amount_tax_display = (
             "include_inclusive_tax" if display_tax_amounts else "exclude_tax"
         )
-        return {"amount_tax_display": amount_tax_display}  # Customize at will!
+        return {"amount_tax_display": amount_tax_display}
 
     def _get_invoice_data(self, session_params, session_line_items):
         return {
@@ -135,6 +137,15 @@ class Facade:
             )
         )
         return step_url
+
+    def _should_generate_invoice(self, basket):
+        return settings.STRIPE_ENABLE_INVOICE_GENERATION
+
+    def _should_compute_tax(self, basket):
+        return settings.STRIPE_ENABLE_TAX_COMPUTATION and not basket.is_tax_known
+
+    def _should_send_receipt(self, basket):
+        return settings.STRIPE_ENABLE_RECEIPT_EXPEDITION
 
     def _get_cancel_url(self, basket):
         return self._get_checkout_step_url(
@@ -209,17 +220,17 @@ class Facade:
             "metadata": session_metadata,
             "capture_method": capture_method,
         }
-        if settings.STRIPE_ENABLE_RECEIPT_EXPEDITION:
+        if self._should_generate_invoice(basket):
             payment_intent_data["receipt_email"] = customer_email
         session_params["payment_intent_data"] = payment_intent_data
 
-        if settings.STRIPE_ENABLE_TAX_COMPUTATION:
+        if self._should_compute_tax(basket):
             tax_session_params = self._get_tax_session_params(
                 session_params, session_line_items
             )
             session_params.update(tax_session_params)
 
-        if settings.STRIPE_ENABLE_INVOICE_GENERATION:
+        if self._should_send_receipt(basket):
             invoice_session_params = self._get_invoice_session_params(
                 session_params, session_line_items
             )
@@ -233,7 +244,27 @@ class Facade:
         return session_params
 
     def _get_extra_session_metadata(self, session_metadata, session_line_items):
-        return {}  # Customize at will!
+        return {}
+
+    def _get_tax_name(self, basket):
+        return settings.STRIPE_DEFAULT_TAX_TITLE
+
+    def _get_tax_rate(self, basket):
+        return basket._tax_ratio
+
+    def _get_tax_amount(self, basket):
+        return int(basket.total_tax * 100)  # expected in cents
+
+    def _get_tax_metadata(self, basket):
+        tax_metadata = {"tax_computer": STRIPE}
+        if basket.is_tax_known:
+            tax_metadata.update({
+                "tax_computer": OSCAR,
+                "tax_name": self._get_tax_name(basket),
+                "tax_rate": self._get_tax_rate(basket),
+                "tax_amount": self._get_tax_amount(basket),
+            })
+        return tax_metadata
 
     def _get_discount_metadata(self, basket):
         discounts = []
@@ -261,6 +292,9 @@ class Facade:
             }
         )
 
+        tax_metadata = self._get_tax_metadata(basket)
+        session_metadata.update(tax_metadata)
+
         extra_session_metadata = self._get_extra_session_metadata(
             session_metadata, session_line_items
         )
@@ -268,55 +302,26 @@ class Facade:
 
         return session_metadata
 
-    def _prepare_line_item(self, name, amount, currency, quantity, tax_code=None):
+    def _prepare_line_item(self, title, tax_code, quantity, currency, amount):
         prepared_line_item = {}
 
-        if settings.STRIPE_USE_PRICES_API:
-            product_data = {"name": name}
-            if tax_code and settings.STRIPE_ENABLE_TAX_COMPUTATION:
-                product_data.update({"tax_code": tax_code})
+        product_data = {"name": title}
+        if settings.STRIPE_ENABLE_TAX_COMPUTATION:
+            product_data.update({"tax_code": tax_code})
 
-            prepared_line_item = {
-                "price_data": {
-                    "product_data": product_data,
-                    "currency": currency,
-                    "unit_amount": amount,
-                },
-                "quantity": quantity,
-            }
-        else:
-            prepared_line_item = {
-                "name": name,
-                "amount": amount,
+        prepared_line_item = {
+            "price_data": {
+                "product_data": product_data,
+                "unit_amount": amount,
                 "currency": currency,
-                "quantity": quantity,
-            }
+            },
+            "quantity": quantity,
+        }
 
         return prepared_line_item
 
     def _get_default_product_tax_code(self):
         return settings.STRIPE_DEFAULT_PRODUCT_TAX_CODE
-
-    def _choose_tax_code(self, raw_line_items):
-        """Choose the singular tax code that should be applied to a
-        compressed basket line, based on the passed `raw_line_items`.
-
-        The default behavior is to refuse to choose, i.e. to raise
-        an exception if different tax codes are found in the basket.
-
-        Customize at will!
-
-        """
-        unique_tax_codes = list(set([item.tax_code for item in raw_line_items]))
-        unique_tax_codes_count = len(unique_tax_codes)
-        if unique_tax_codes_count == 0:
-            return self._get_default_product_tax_code()
-        elif unique_tax_codes_count == 1:
-            return unique_tax_codes[0]
-        else:
-            raise MultipleTaxCodesInBasketError(
-                "Basket contains products with different tax codes."
-            )
 
     def _convert_to_cents(self, price, currency):
         """
@@ -335,73 +340,68 @@ class Facade:
     def prepare_line_items(self, raw_line_items, order_total):
         prepared_line_items = []
 
-        if settings.STRIPE_COMPRESS_TO_ONE_LINE_ITEM:
-            name = ", ".join(
-                [
-                    f"{raw_line_item.quantity}x{raw_line_item.title}"
-                    for raw_line_item in raw_line_items
-                ]
-            )
-            amount = self._convert_to_cents(order_total.excl_tax, order_total.currency)
-            currency = order_total.currency
-            quantity = 1
-            tax_code = self._choose_tax_code(raw_line_items)
-
+        for raw_line_item in raw_line_items:
             prepared_line_item = self._prepare_line_item(
-                name, amount, currency, quantity, tax_code
+                raw_line_item.title,
+                raw_line_item.tax_code,
+                raw_line_item.quantity,
+                raw_line_item.currency,
+                self._convert_to_cents(
+                    raw_line_item.price,
+                    raw_line_item.currency,
+                ),
             )
             prepared_line_items.append(prepared_line_item)
 
-        else:
-            for raw_line_item in raw_line_items:
-
-                name = raw_line_item.title
-                amount = self._convert_to_cents(
-                    raw_line_item.price_excl_tax, raw_line_item.price_currency
-                )
-                currency = raw_line_item.price_currency
-                quantity = raw_line_item.quantity
-                tax_code = raw_line_item.tax_code
-
-                prepared_line_item = self._prepare_line_item(
-                    name, amount, currency, quantity, tax_code
-                )
-                prepared_line_items.append(prepared_line_item)
-
         return prepared_line_items
+
+    def _get_tax_title(self, basket):
+        return settings.STRIPE_DEFAULT_TAX_TITLE
 
     def _get_shipping_tax_code(self):
         return settings.STRIPE_DEFAULT_SHIPPING_TAX_CODE
 
     def _get_product_tax_code(self, product):
-        return settings.STRIPE_DEFAULT_PRODUCT_TAX_CODE  # Customize at will!
+        return settings.STRIPE_DEFAULT_PRODUCT_TAX_CODE
 
     def get_raw_line_items(self, basket, shipping_method):
         raw_line_items = []
 
         for line in basket.all_lines():
-            # This loop splits line into discounted and non-discounted ones
-            for prices in line.get_price_breakdown():
-                _, price_excl_tax, quantity = prices
-                raw_line_items.append(
-                    PaymentItem(
-                        title=line.product.get_title(),
-                        price_excl_tax=price_excl_tax,
-                        price_currency=line.price_currency,
-                        quantity=quantity,
-                        tax_code=self._get_product_tax_code(line.product),
-                    )
+            product = line.product
+            raw_line_items.append(
+                PaymentItem(
+                    title=product.get_title(),
+                    quantity=line.quantity,
+                    currency=line.price_currency,
+                    price=line.price_excl_tax,
+                    is_tax_included=False,
+                    tax_code=self._get_product_tax_code(product),
                 )
+            )
 
         if basket.is_shipping_required() and shipping_method:
             shipping_price = shipping_method.calculate(basket)
             raw_line_items.append(
                 PaymentItem(
                     title=self.shipping_method.name,
-                    price_excl_tax=shipping_price.excl_tax,
-                    price_currency=shipping_price.currency,
                     quantity=1,
+                    currency=shipping_price.currency,
+                    price=shipping_price.excl_tax,
+                    is_tax_included=False,
                     tax_code=self._get_shipping_tax_code(),
+                )
+            )
+
+        if basket.is_tax_known:
+            raw_line_items.append(
+                PaymentItem(
+                    title=self._get_tax_title(basket),
+                    quantity=1,
+                    currency=basket.currency,
+                    price=basket.total_tax,
+                    is_tax_included=True,
+                    tax_code=None,
                 )
             )
 
@@ -436,7 +436,7 @@ class Facade:
         return session
 
     def before_checkout_start(self, request, **kwargs):
-        pass  # Customize at will!
+        pass
 
     def retrieve_checkout_session(self, checkout_session_id=None, payment_intent_id=None):
         if not checkout_session_id:
@@ -531,10 +531,10 @@ class Facade:
         raise NotImplementedError  # Implement before calling!
 
     def _get_invoice_product_type(self, product):
-        return product.get_product_class().name  # Customize at will!
+        return product.get_product_class().name
 
     def _get_invoice_product_title(self, product):
-        return product.get_title()  # Customize at will!
+        return product.get_title()
 
     def create_invoice(self, payment_intent_id, invoice_number=None):
         invoicer = self.stripe_client.invoices
@@ -600,12 +600,19 @@ class Facade:
                 })
                 coupons.append(coupon)
 
+        # We also check how the tax was computed.
+        tax_computer = payment_metadata.tax_computer
+        is_automatic_tax_enabled = (
+            settings.STRIPE_ENABLE_TAX_COMPUTATION
+            and tax_computer == STRIPE
+        )
+
         # And we finally create the invoice.
         self.logger.info(
             f"*** Creating invoice for checkout session: {checkout_session.id}"
         )
         today = round(dt.now(tz.utc).timestamp())
-        number = invoice_number or self._get_next_invoice_number()  # overridden in the project
+        number = invoice_number or self._get_next_invoice_number()
         customer = checkout_session.customer
         params = {
             "number": number,
@@ -613,7 +620,7 @@ class Facade:
             "collection_method": "send_invoice",
             "due_date": today,
             "automatic_tax": {
-                "enabled": settings.STRIPE_ENABLE_TAX_COMPUTATION,
+                "enabled": is_automatic_tax_enabled,
             },
         }
         # If we created coupons in the previous step,
@@ -645,8 +652,8 @@ class Facade:
             product_type = self._get_invoice_product_type(product)
             product_title = self._get_invoice_product_title(product)
             description = f"[{product_type}] {product_title}"
+            unit_price_excl_tax = int(order_line.unit_price_excl_tax * 100)
             quantity = order_line.quantity
-            amount = int(order_line.unit_price_excl_tax * 100)
 
             # ... building the adequate Stripe data structure...
             # (see: https://docs.stripe.com/api/invoice-line-item/bulk)
@@ -658,15 +665,34 @@ class Facade:
                         "name": description,
                     },
                     "tax_behavior": "exclusive",
-                    "unit_amount": amount,
+                    "unit_amount": unit_price_excl_tax,
                 },
                 "quantity": quantity,
             }
 
-            # ... and adding tax-related information if needed.
+            # ... and adding the proper tax-related information.
             if settings.STRIPE_ENABLE_TAX_COMPUTATION:
-                tax_code = self._get_product_tax_code(product)
-                line_item["price_data"]["product_data"]["tax_code"] = tax_code
+                self.logger.info(f"*** Adding tax -- computed by {tax_computer}")
+
+                if tax_computer == STRIPE:
+                    tax_code = self._get_product_tax_code(product)
+                    line_item["price_data"]["product_data"]["tax_code"] = tax_code
+                    self.logger.info(f"*** tax_code: {tax_code}")
+
+                elif tax_computer == OSCAR:
+                    unit_price_tax = int(order_line.unit_price_tax * 100)
+                    tax_amount = {
+                        "amount": unit_price_tax,
+                        "taxable_amount": unit_price_excl_tax,
+                        "tax_rate_data": {
+                            "tax_type": "vat",
+                            "display_name": payment_metadata.tax_name,
+                            "percentage": payment_metadata.tax_rate,
+                            "inclusive": False,
+                        }
+                    }
+                    line_item["tax_amounts"] = [tax_amount]
+                    self.logger.info(f"*** tax_amount: {tax_amount}")
 
             line_items.append(line_item)
 

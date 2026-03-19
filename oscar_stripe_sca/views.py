@@ -235,11 +235,13 @@ class StripeSCAWebhookView(
                 )
 
             try:
-                paid_tax_amount = event_data["amount_details"]["tax"]["total_tax_amount"]
+                paid_tax_amount = int(event_metadata["tax_amount"])  # in cents
             except KeyError:
-                paid_tax_amount = 0
-            else:
-                logger.info(f"*** paid_tax_amount: {paid_tax_amount}")
+                try:
+                    paid_tax_amount = event_data["amount_details"]["tax"]["total_tax_amount"]  # noqa
+                except KeyError:
+                    paid_tax_amount = 0
+            logger.info(f"*** paid_tax_amount: {paid_tax_amount}")
 
             self.submit_basket(
                 basket,

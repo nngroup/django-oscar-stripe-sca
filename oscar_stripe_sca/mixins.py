@@ -58,13 +58,14 @@ class StripePaymentMixin:
                     _("No basket was found for your Stripe transaction"),
                 )
             return None
+        else:
+            user = user or basket.owner
 
         # Assign strategy to basket instance
         if StrategySelector:
-            basket.strategy = StrategySelector().strategy(request)
+            basket.strategy = StrategySelector().strategy(user=user)
 
         # Re-apply any offers
-        user = user or basket.owner
         OfferApplicator().apply(basket, user=user, request=request)
 
         return basket
