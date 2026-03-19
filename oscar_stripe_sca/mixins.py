@@ -58,13 +58,14 @@ class StripePaymentMixin:
                     _("No basket was found for your Stripe transaction"),
                 )
             return None
+        else:
+            user = user or basket.owner
 
         # Assign strategy to basket instance
         if StrategySelector:
-            basket.strategy = StrategySelector().strategy(request)
+            basket.strategy = StrategySelector().strategy(user=user)
 
         # Re-apply any offers
-        user = user or basket.owner
         OfferApplicator().apply(basket, user=user, request=request)
 
         return basket
@@ -161,6 +162,7 @@ class StripePaymentMixin:
         billing_address = self.get_billing_address(shipping_address)
 
         paid_tax_amount = kwargs.pop("paid_tax_amount", 0)
+        tax_rate_version_id = kwargs.pop("tax_rate_version_id", None)
 
         submission = {
             "user": user,
@@ -193,11 +195,18 @@ class StripePaymentMixin:
                 "order_total": order_total,
             }
         )
+
         if billing_address:
             submission["payment_kwargs"]["billing_address"] = billing_address
 
+        if tax_rate_version_id:
+            submission["order_kwargs"].update({
+                "tax_rate_version_id": tax_rate_version_id
+            })
+
         # Allow overrides to be passed in
         submission.update(kwargs)
+
         logger.debug(f"*** submission: {submission}")
 
         return submission
@@ -254,17 +263,20 @@ class OneStepPaymentMixin(StripePaymentMixin):
         shipping_method,
         paid_tax_amount=None,
         payment_intent_id=None,
+        tax_rate_version_id=None,
     ):
         submission = self.build_submission(
             basket=basket,
             shipping_method=shipping_method,
             paid_tax_amount=paid_tax_amount,
+            tax_rate_version_id=tax_rate_version_id,
         )
         if payment_intent_id:
             self.add_payment_details(
                 order_total=submission["order_total"],
                 payment_intent_id=payment_intent_id,
             )
+
         return self.submit(**submission)
 
     def submit(
@@ -301,6 +313,7 @@ class OneStepPaymentMixin(StripePaymentMixin):
             # actually place an order. Not a good situation to be in as a
             # payment transaction may already have taken place, but needs
             # to be handled gracefully.
+
             msg = str(ex)
             logger.error(
                 "*** Order #%s: unable to place order - %s",
@@ -312,6 +325,7 @@ class OneStepPaymentMixin(StripePaymentMixin):
         except Exception as ex:
 
             # Hopefully you only ever reach this in development...
+
             msg = str(ex)
             logger.exception(
                 "*** Order #%s: unhandled exception while placing order (%s)",

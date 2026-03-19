@@ -235,17 +235,26 @@ class StripeSCAWebhookView(
                 )
 
             try:
-                paid_tax_amount = event_data["amount_details"]["tax"]["total_tax_amount"]
+                paid_tax_amount = int(event_metadata["tax_amount"])  # in cents
             except KeyError:
-                paid_tax_amount = 0
-            else:
-                logger.info(f"*** paid_tax_amount: {paid_tax_amount}")
+                try:
+                    paid_tax_amount = event_data["amount_details"]["tax"]["total_tax_amount"]  # noqa
+                except KeyError:
+                    paid_tax_amount = 0
+            logger.info(f"*** paid_tax_amount: {paid_tax_amount}")
+
+            try:
+                tax_rate_version_id = event_metadata["tax_rate_version_id"]
+            except KeyError:
+                tax_rate_version_id = None
+            logger.info(f"*** tax_rate_version_id: {tax_rate_version_id}")
 
             self.submit_basket(
                 basket,
                 shipping_method,
                 paid_tax_amount=paid_tax_amount,
                 payment_intent_id=payment_intent_id,
+                tax_rate_version_id=tax_rate_version_id,
             )  # from OneStepPaymentMixin
 
         logger.info("*** Stripe webhook processing complete")
