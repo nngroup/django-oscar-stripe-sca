@@ -64,3 +64,4 @@ for origin in STRIPE_WEBHOOK_ORIGINS:
 
 SHOPPING_CART_SYSTEM = "scs"
 OSCAR = "oscar"
+STRIPE = "stripe"
