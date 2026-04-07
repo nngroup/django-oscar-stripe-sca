@@ -100,9 +100,9 @@ class StripePaymentMixin:
                 currency=currency, excl_tax=excl_tax, incl_tax=incl_tax
             )
 
-        # If tax was already paid on the basket, add it now
+        # If tax was already paid, *even if it was zero*, add it now
         logger.info(f"*** get_order_totals: paid_tax_amount: {paid_tax_amount}")
-        if paid_tax_amount and paid_tax_amount > 0:
+        if paid_tax_amount is not None:
             order_total.tax = Decimal(str(paid_tax_amount / 100))
 
         logger.info(f"*** get_order_totals: order_total: {order_total}")

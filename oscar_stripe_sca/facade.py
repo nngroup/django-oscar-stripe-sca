@@ -141,8 +141,14 @@ class Facade:
     def _should_generate_invoice(self, basket):
         return settings.STRIPE_ENABLE_INVOICE_GENERATION
 
+    def _is_tax_known_before_checkout(self, basket):
+        return basket.is_tax_known
+
     def _should_compute_tax(self, basket):
-        return settings.STRIPE_ENABLE_TAX_COMPUTATION and not basket.is_tax_known
+        return (
+            settings.STRIPE_ENABLE_TAX_COMPUTATION
+            and not self._is_tax_known_before_checkout(basket)
+        )
 
     def _should_send_receipt(self, basket):
         return settings.STRIPE_ENABLE_RECEIPT_EXPEDITION
@@ -257,7 +263,7 @@ class Facade:
 
     def _get_tax_metadata(self, basket):
         tax_metadata = {"tax_computer": STRIPE}
-        if basket.is_tax_known:
+        if self._is_tax_known_before_checkout(basket):
             tax_metadata.update({
                 "tax_computer": OSCAR,
                 "tax_name": self._get_tax_name(basket),
@@ -367,18 +373,23 @@ class Facade:
     def get_raw_line_items(self, basket, shipping_method):
         raw_line_items = []
 
+        currency = basket.currency
+
         for line in basket.all_lines():
             product = line.product
-            raw_line_items.append(
-                PaymentItem(
-                    title=product.get_title(),
-                    quantity=line.quantity,
-                    currency=line.price_currency,
-                    price=line.price_excl_tax,
-                    is_tax_included=False,
-                    tax_code=self._get_product_tax_code(product),
+            for prices in line.get_price_breakdown():  # apply discounts!!!
+                _, price_excl_tax, quantity = prices
+
+                raw_line_items.append(
+                    PaymentItem(
+                        title=product.get_title(),
+                        quantity=quantity,
+                        currency=currency,
+                        price=price_excl_tax,
+                        is_tax_included=False,
+                        tax_code=self._get_product_tax_code(product),
+                    )
                 )
-            )
 
         if basket.is_shipping_required() and shipping_method:
             shipping_price = shipping_method.calculate(basket)
@@ -386,19 +397,19 @@ class Facade:
                 PaymentItem(
                     title=self.shipping_method.name,
                     quantity=1,
-                    currency=shipping_price.currency,
+                    currency=currency,
                     price=shipping_price.excl_tax,
                     is_tax_included=False,
                     tax_code=self._get_shipping_tax_code(),
                 )
             )
 
-        if basket.is_tax_known:
+        if self._is_tax_known_before_checkout(basket):
             raw_line_items.append(
                 PaymentItem(
                     title=self._get_tax_title(basket),
                     quantity=1,
-                    currency=basket.currency,
+                    currency=currency,
                     price=basket.total_tax,
                     is_tax_included=True,
                     tax_code=None,
