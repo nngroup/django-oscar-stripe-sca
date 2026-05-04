@@ -483,8 +483,8 @@ class Facade:
         )
         payment_intent.capture()
     
-    def retrieve_charge(self, payment_intent_id):
-        return self.stripe_client.charges.retrieve(payment_intent_id)
+    def retrieve_charge(self, charge_id):
+        return self.stripe_client.charges.retrieve(charge_id)
 
     def _raise_order_payment_capture_error(self, error_reason, original_exception=None):
         error_message = f"Payment capture failed: {error_reason}"
