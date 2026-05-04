@@ -482,6 +482,9 @@ class Facade:
             payment_intent_id, checkout_session_id
         )
         payment_intent.capture()
+    
+    def retrieve_charge(self, charge_id):
+        return self.stripe_client.charges.retrieve(charge_id)
 
     def _raise_order_payment_capture_error(self, error_reason, original_exception=None):
         error_message = f"Payment capture failed: {error_reason}"
@@ -738,7 +741,7 @@ class Facade:
             "payload": payload,
             "sig_header": sig_header,
         }
-        secret = settings.STRIPE_WEBHOOK_ENDPOINT_SECRET
+        secret = settings.STRIPE_OSCAR_WEBHOOK_SECRET
         if secret:
             params.update({"secret": secret})
 
