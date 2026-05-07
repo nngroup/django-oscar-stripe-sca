@@ -482,9 +482,18 @@ class Facade:
             payment_intent_id, checkout_session_id
         )
         payment_intent.capture()
-    
+
     def retrieve_charge(self, charge_id):
         return self.stripe_client.charges.retrieve(charge_id)
+
+    def retrieve_balance_transaction(self, balance_transaction_id):
+        return self.stripe_client.balance_transactions.retrieve(balance_transaction_id)
+
+    def retrieve_refund(self, refund_id):
+        return self.stripe_client.refunds.retrieve(refund_id)
+
+    def list_refunds_for_charge(self, charge_id):
+        return self.stripe_client.refunds.list(params={"charge": charge_id})
 
     def _raise_order_payment_capture_error(self, error_reason, original_exception=None):
         error_message = f"Payment capture failed: {error_reason}"
