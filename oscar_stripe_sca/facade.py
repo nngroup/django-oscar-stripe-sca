@@ -766,9 +766,10 @@ class Facade:
         results = self.stripe_client.invoices.search(params={"number": invoice_number})
         try:
             invoice_id = results["data"][0]["id"]
-            return self.retrieve_invoice(invoice_id)
         except IndexError:
             return None
+        else:
+            return self.retrieve_invoice(invoice_id)
 
     def record_invoice(self, invoice_id, payment_intent_id):
         raise NotImplementedError  # Implement before calling!
