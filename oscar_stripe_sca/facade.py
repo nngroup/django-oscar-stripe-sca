@@ -449,43 +449,18 @@ class Facade:
     def before_checkout_start(self, request, **kwargs):
         pass
 
-    def retrieve_checkout_session(self, checkout_session_id=None, payment_intent_id=None, params={}):
-        """
-        Retrieve a Stripe Checkout Session.
-
-        If a payment intent ID is provided, it will be used to filter the sessions.
-        If a checkout session ID is provided, it will be used to retrieve the session.
-        If no ID is provided, an error will be raised.
-
-        Parameters:
-        - checkout_session_id: The ID of the checkout session to retrieve.
-        - payment_intent_id: The ID of the payment intent to filter the sessions by.
-        - params: Additional parameters to pass to the API call.
-        
-        A note on params: it has a different format depending on the method used. Example:
-        - list: {"expand": ["data.total_details.breakdown"]}
-        - retrieve: "expand": ["total_details.breakdown"]
-
-        Returns:
-        - The Stripe Checkout Session.
-        """
-
-        if not checkout_session_id and not payment_intent_id:
-            raise ValueError()
-
-        if payment_intent_id:
-            params.update({"payment_intent": payment_intent_id})
-            return self.stripe_client.checkout.sessions.list(params=params).data[0]
-
-        return self.stripe_client.checkout.sessions.retrieve(checkout_session_id, params=params)
+    def retrieve_checkout_session(self, checkout_session_id):
+        return self.stripe_client.checkout.sessions.retrieve(checkout_session_id)
+    
+    def retrieve_checkout_session_by_payment_intent_id(self, payment_intent_id, params={}):
+        params.update({"payment_intent": payment_intent_id})
+        return self.stripe_client.checkout.sessions.list(params=params).data[0]
 
     def retrieve_checkout_session_lines(self, checkout_session):
         return self.stripe_client.checkout.sessions.line_items.list(checkout_session.id)
 
     def retrieve_payment_intent_id(self, checkout_session_id):
-        checkout_session = self.retrieve_checkout_session(
-            checkout_session_id=checkout_session_id
-        )
+        checkout_session = self.retrieve_checkout_session(checkout_session_id)
         return checkout_session.get("payment_intent")
 
     def retrieve_payment_intent(self, payment_intent_id=None, checkout_session_id=None):
@@ -591,7 +566,7 @@ class Facade:
         self.logger.debug(f"*** payment_intent_id: {payment_intent_id}")
 
         # We retrieve the checkout session and payment metadata.
-        checkout_session = self.retrieve_checkout_session(
+        checkout_session = self.retrieve_checkout_session_by_payment_intent_id(
             payment_intent_id=payment_intent_id
         )
         checkout_session_id = checkout_session.id
@@ -763,7 +738,7 @@ class Facade:
         return self.stripe_client.invoices.retrieve(invoice_id)
     
     def retrieve_invoice_by_invoice_number(self, invoice_number):
-        results = self.stripe_client.invoices.search(params={"number": invoice_number})
+        results = self.stripe_client.invoices.search({'query': f'number:"{invoice_number}"'})
         try:
             invoice_id = results["data"][0]["id"]
         except IndexError:
