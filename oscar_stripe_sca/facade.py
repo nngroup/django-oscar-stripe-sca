@@ -722,10 +722,10 @@ class Facade:
         self.logger.info(f"*** Finalizing invoice: {invoice_info}")
         invoicer.finalize_invoice(invoice=invoice_id)
 
-        # ... linked to its payment...
-        self.logger.info(f"*** Attaching payment to invoice: {invoice_info}")
-        params = {"payment_intent": payment_intent_id}
-        invoicer.attach_payment(invoice_id, params=params)
+        # # ... linked to its payment...
+        # self.logger.info(f"*** Attaching payment to invoice: {invoice_info}")
+        # params = {"payment_intent": payment_intent_id}
+        # invoicer.attach_payment(invoice_id, params=params)
 
         # ... and sent, *if* that should be done through Stripe.
         if settings.STRIPE_INVOICE_SENDING == INVOICE_SENDING_AUTOMATIC:
