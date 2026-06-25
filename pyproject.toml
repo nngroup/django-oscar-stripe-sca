@@ -4,7 +4,7 @@ build-backend = "flit_scm:buildapi"
 
 [project]
 name = "django-oscar-stripe-sca"
-version = "0.8.2-15"
+version = "0.8.2-16"
 description = "Stripe Checkout payment module for django-oscar"
 readme = "README.rst"
 license = "MIT"
@@ -12,6 +12,7 @@ license-files = ["LICENSE"]
 authors = [
     {name = "Steve Bradshaw", email = "steve@pcfive.co.uk"},
     {name = "Mathieu Richardoz", email = "richardoz@nngroup.com"},
+    {name = "Joseph Zammit", email = "zammit@nngroup.com"},
 ]
 keywords = [
     "django",
