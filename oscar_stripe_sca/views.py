@@ -18,6 +18,8 @@ from oscar.core.loading import get_class, get_model
 
 from . import settings
 from .constants import (
+    CAPTURE_METHOD_AUTOMATIC,
+    CAPTURE_METHOD_MANUAL,
     PACKAGE_NAME,
     PAYMENT_EVENT_PURCHASE,
     PAYMENT_METHOD_STRIPE,
@@ -211,6 +213,78 @@ class StripeSCAWebhookView(
         event_metadata = event_data.get("metadata")
         logger.info(f"*** Stripe event: [{event_type}] --> {event_data}")
 
+        should_submit_basket = False
+
+        if event_type == "payment_intent.amount_capturable_updated":
+            payment_intent_id = event_data["id"]
+
+            # Abort if we shouldn't capture this payment intent manually
+            try:
+                capture_method = event_metadata["capture_method"]
+            except KeyError:
+                capture_method = CAPTURE_METHOD_AUTOMATIC
+            if capture_method == CAPTURE_METHOD_AUTOMATIC:
+                logger.info("*** No need for manual capture, aborting!")
+                return HttpResponse(status=HTTPStatus.OK)
+
+            # Abort if we can't find a capturable amount
+            try:
+                amount_capturable = int(event_data["amount_capturable"])
+            except KeyError:
+                logger.error("*** No amount_capturable in event data, aborting!")
+                return HttpResponse(status=HTTPStatus.OK)
+            else:
+                logger.info(f"*** amount_capturable: {amount_capturable}")
+
+            # Abort if we can't find an actual product amount to capture
+            try:
+                total_excl_tax = int(event_metadata["total_excl_tax"])
+            except KeyError:
+                logger.error("*** No total_excl_tax in event metadata, aborting!")
+                return HttpResponse(status=HTTPStatus.OK)
+            else:
+                logger.info(f"*** total_excl_tax: {total_excl_tax}")
+
+            # Abort if the product amount has probably been captured already
+            if total_excl_tax > amount_capturable:
+                logger.info("*** Not enough left to capture product amount, aborting!")
+                return HttpResponse(status=HTTPStatus.OK)
+
+            # Okay, let's go and get that sweet money!
+            facade.capture_payment_intent(
+                payment_intent_id=payment_intent_id,
+                amount_to_capture=total_excl_tax,
+                final_capture=False,
+            )
+
+            try:
+                basket_id = event_metadata["basket_id"]
+            except KeyError:
+                logger.error("*** No basket id in event metadata, aborting!")
+                return HttpResponse(status=HTTPStatus.OK)
+            else:
+                logger.info(f"*** basket_id: {basket_id}")
+                basket = self.load_frozen_basket(basket_id)
+
+            try:
+                shipping_code = event_metadata["shipping_method"]
+            except KeyError:
+                logger.error("*** No shipping code in event metadata, aborting!")
+                return HttpResponse(status=HTTPStatus.OK)
+            else:
+                logger.info(f"*** shipping_code: {shipping_code}")
+                shipping_method = self.get_shipping_method_by_code(
+                    shipping_code, basket
+                )
+
+            paid_tax_amount = 0
+            logger.info(f"*** paid_tax_amount: {paid_tax_amount}")
+
+            tax_rate_version_id = None
+            logger.info(f"*** tax_rate_version_id: {tax_rate_version_id}")
+
+            should_submit_basket = True
+
         if event_type == "payment_intent.succeeded":
             payment_intent_id = event_data["id"]
 
@@ -249,6 +323,9 @@ class StripeSCAWebhookView(
                 tax_rate_version_id = None
             logger.info(f"*** tax_rate_version_id: {tax_rate_version_id}")
 
+            should_submit_basket = True
+
+        if should_submit_basket:
             self.submit_basket(
                 basket,
                 shipping_method,
