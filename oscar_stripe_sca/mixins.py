@@ -61,9 +61,14 @@ class StripePaymentMixin:
         else:
             user = user or basket.owner
 
-        # Assign strategy to basket instance
+        # Assign strategy to basket instance.
+        # Pass request and basket so project Selectors can use request data
+        # and/or basket attributes (e.g. is_personal_purchase) when no POST
+        # body is available (webhook / preview / cancel).
         if StrategySelector:
-            basket.strategy = StrategySelector().strategy(user=user)
+            basket.strategy = StrategySelector().strategy(
+                user=user, request=request, basket=basket
+            )
 
         # Re-apply any offers
         OfferApplicator().apply(basket, user=user, request=request)
