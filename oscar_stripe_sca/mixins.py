@@ -16,7 +16,6 @@ from oscar.core.exceptions import ModuleNotFoundError
 
 from . import settings
 from .constants import (
-    INVOICE_NUMBERING_MANUAL,
     PAYMENT_EVENT_PURCHASE,
     PAYMENT_METHOD_STRIPE,
 )
