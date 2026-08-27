@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from datetime import datetime as dt, timezone as tz
 from decimal import Decimal, ROUND_HALF_UP
+import json
 import logging
 
 from django.apps import apps
@@ -454,7 +455,10 @@ class Facade:
         session_params = self.build_session_params(
             basket, customer_email, session_line_items, session_metadata
         )
-        self.logger.info(f"*** Stripe session parameters: {session_params}")
+        self.logger.info(
+            "*** Stripe session parameters:\n%s",
+            json.dumps(session_params, indent=2, default=str),
+        )
 
         basket.freeze()
 
