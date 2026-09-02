@@ -470,6 +470,15 @@ class Facade:
     def before_checkout_start(self, request, **kwargs):
         pass
 
+    def get_order_kwargs(self, basket, **kwargs):
+        """Return extra kwargs to pass when creating the Oscar Order.
+
+        Host projects can override this to persist extra Order fields
+        derived from the basket at placement time.
+
+        """
+        return {}
+
     def retrieve_checkout_session(self, checkout_session_id):
         return self.stripe_client.checkout.sessions.retrieve(checkout_session_id)
     

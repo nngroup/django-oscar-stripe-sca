@@ -152,6 +152,21 @@ class StripePaymentMixin:
             if shipping_method.code == code:
                 return shipping_method
 
+    def get_order_kwargs(self, basket, **kwargs):
+        """Return extra kwargs to pass when creating the Oscar Order.
+
+        Host projects should override Facade.get_order_kwargs to persist
+        extra Order fields. tax_rate_version_id is copied from webhook
+        metadata when present.
+
+        """
+        order_kwargs = {}
+        tax_rate_version_id = kwargs.get("tax_rate_version_id")
+        if tax_rate_version_id:
+            order_kwargs["tax_rate_version_id"] = tax_rate_version_id
+        order_kwargs.update(Facade().get_order_kwargs(basket, **kwargs))
+        return order_kwargs
+
     def build_submission(self, **kwargs):
         logger.debug("*** Building submission...")
 
@@ -166,7 +181,8 @@ class StripePaymentMixin:
         billing_address = self.get_billing_address(shipping_address)
 
         paid_tax_amount = kwargs.pop("paid_tax_amount", 0)
-        tax_rate_version_id = kwargs.pop("tax_rate_version_id", None)
+        order_kwargs = self.get_order_kwargs(basket, **kwargs)
+        kwargs.pop("tax_rate_version_id", None)
 
         submission = {
             "user": user,
@@ -174,7 +190,7 @@ class StripePaymentMixin:
             "shipping_address": shipping_address,
             "shipping_method": shipping_method,
             "billing_address": billing_address,
-            "order_kwargs": {},
+            "order_kwargs": order_kwargs,
             "payment_kwargs": {},
         }
 
@@ -202,11 +218,6 @@ class StripePaymentMixin:
 
         if billing_address:
             submission["payment_kwargs"]["billing_address"] = billing_address
-
-        if tax_rate_version_id:
-            submission["order_kwargs"].update({
-                "tax_rate_version_id": tax_rate_version_id
-            })
 
         # Allow overrides to be passed in
         submission.update(kwargs)
