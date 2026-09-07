@@ -300,8 +300,11 @@ class StripeSCAWebhookView(
             except KeyError:
                 logger.error("*** No shipping code in event metadata, aborting!")
                 return HttpResponse(status=HTTPStatus.OK)
+            if shipping_code == NoShippingRequired().code:
+                logger.info(f"*** No shipping required")
+                shipping_method = None
             else:
-                logger.info(f"*** shipping_code: {shipping_code}")
+                logger.info(f"*** shipping_code: {shipping_code}")    
                 shipping_method = self.get_shipping_method_by_code(
                     shipping_code, basket
                 )
