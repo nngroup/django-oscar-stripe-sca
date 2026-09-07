@@ -471,7 +471,7 @@ class Facade:
         pass
 
     def get_order_kwargs(self, basket, **kwargs):
-        """Return extra kwargs to pass when creating the Oscar Order.
+        """Return extra kwargs to pass when placing the Oscar Order.
 
         Host projects can override this to persist extra Order fields
         derived from the basket at placement time.
