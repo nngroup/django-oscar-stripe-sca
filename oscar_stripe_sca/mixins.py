@@ -153,7 +153,7 @@ class StripePaymentMixin:
                 return shipping_method
 
     def get_order_kwargs(self, basket, **kwargs):
-        """Return extra kwargs to pass when creating the Oscar Order.
+        """Return extra kwargs to pass when placing the Oscar Order.
 
         Host projects should override Facade.get_order_kwargs to persist
         extra Order fields. tax_rate_version_id is copied from webhook
