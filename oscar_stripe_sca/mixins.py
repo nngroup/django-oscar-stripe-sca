@@ -164,7 +164,7 @@ class StripePaymentMixin:
         tax_rate_version_id = kwargs.get("tax_rate_version_id")
         if tax_rate_version_id:
             order_kwargs["tax_rate_version_id"] = tax_rate_version_id
-        order_kwargs.update(Facade().get_order_kwargs(basket, **kwargs))
+        order_kwargs.update(Facade().get_extra_order_kwargs(basket, **kwargs))
         return order_kwargs
 
     def build_submission(self, **kwargs):
