@@ -324,7 +324,7 @@ class StripeSCAWebhookView(
                 tax_rate_version_id = None
             logger.info(f"*** tax_rate_version_id: {tax_rate_version_id}")
 
-            should_submit_basket = True
+            should_submit_basket = basket is not None
 
         if should_submit_basket:
             self.submit_basket(
