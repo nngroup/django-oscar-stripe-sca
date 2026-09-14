@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from datetime import datetime as dt, timezone as tz
 from decimal import Decimal, ROUND_HALF_UP
+import json
 import logging
 
 from django.apps import apps
@@ -14,16 +15,14 @@ from .constants import (
     CAPTURE_METHOD_AUTOMATIC,
     CAPTURE_METHOD_MANUAL,
     INVOICE_NUMBERING_AUTOMATIC,
-    INVOICE_NUMBERING_MANUAL,
     INVOICE_SENDING_AUTOMATIC,
-    INVOICE_SENDING_MANUAL,
     OSCAR,
     SESSION_MODE_PAYMENT,
     STRIPE,
     SHOPPING_CART_SYSTEM,
     ZERO_DECIMAL_CURRENCIES,
 )
-from .exceptions import MultipleTaxCodesInBasketError, PaymentCaptureError
+from .exceptions import PaymentCaptureError
 
 
 Basket = apps.get_model("basket", "Basket")
@@ -143,6 +142,9 @@ class Facade:
     def _is_tax_known_before_checkout(self, basket):
         return basket.is_tax_known
 
+    def _is_pending_tax_exemption(self, basket):
+        return False
+
     def _should_compute_tax(self, basket):
         return (
             settings.STRIPE_ENABLE_TAX_COMPUTATION
@@ -192,8 +194,10 @@ class Facade:
 
         return self._get_order_confirmation_url()
 
-    def _get_capture_method(self):
-        if settings.STRIPE_BYPASS_ORDER_PREVIEW:
+    def _get_capture_method(self, basket):
+        if self._is_pending_tax_exemption(basket):
+            return CAPTURE_METHOD_MANUAL
+        elif settings.STRIPE_BYPASS_ORDER_PREVIEW:
             return CAPTURE_METHOD_AUTOMATIC
         else:
             return CAPTURE_METHOD_MANUAL
@@ -206,7 +210,7 @@ class Facade:
     ):
 
         session_mode = self._get_session_mode()
-        capture_method = self._get_capture_method()
+        capture_method = self._get_capture_method(basket)
         success_url = self._get_success_url(basket)
         cancel_url = self._get_cancel_url(basket)
 
@@ -227,6 +231,14 @@ class Facade:
         if self._should_generate_invoice(basket):
             payment_intent_data["receipt_email"] = customer_email
         session_params["payment_intent_data"] = payment_intent_data
+
+        if capture_method == CAPTURE_METHOD_MANUAL:
+            payment_method_options = {
+                "card": {
+                    "request_multicapture": "if_available"
+                }
+            }
+            session_params["payment_method_options"] = payment_method_options
 
         if self._should_compute_tax(basket):
             tax_session_params = self._get_tax_session_params(
@@ -288,6 +300,14 @@ class Facade:
             "basket_id": basket.id,
             "shipping_method": shipping_method.code,
         }
+
+        capture_method = self._get_capture_method(basket)
+        session_metadata.update(
+            {
+                "capture_method": capture_method,
+                "total_excl_tax": int(basket.total_excl_tax * 100)  # in cents
+            }
+        )
 
         discount_metadata = self._get_discount_metadata(basket)
         session_metadata.update(
@@ -435,7 +455,10 @@ class Facade:
         session_params = self.build_session_params(
             basket, customer_email, session_line_items, session_metadata
         )
-        self.logger.info(f"*** Stripe session parameters: {session_params}")
+        self.logger.info(
+            "*** Stripe session parameters:\n%s",
+            json.dumps(session_params, indent=2, default=str),
+        )
 
         basket.freeze()
 
@@ -446,6 +469,15 @@ class Facade:
 
     def before_checkout_start(self, request, **kwargs):
         pass
+
+    def get_extra_order_kwargs(self, basket, **kwargs):
+        """Return extra kwargs to pass when placing the Oscar Order.
+
+        Host projects can override this to persist extra Order fields
+        derived from the basket at placement time.
+
+        """
+        return {}
 
     def retrieve_checkout_session(self, checkout_session_id):
         return self.stripe_client.checkout.sessions.retrieve(checkout_session_id)
@@ -470,11 +502,22 @@ class Facade:
 
         return self.stripe_client.payment_intents.retrieve(payment_intent_id)
 
-    def capture_payment_intent(self, payment_intent_id=None, checkout_session_id=None):
+    def capture_payment_intent(
+        self,
+        payment_intent_id=None,
+        checkout_session_id=None,
+        amount_to_capture=None,
+        final_capture=True,
+    ):
         payment_intent = self.retrieve_payment_intent(
             payment_intent_id, checkout_session_id
         )
-        payment_intent.capture()
+
+        capture_params = {"final_capture": final_capture}
+        if amount_to_capture:
+            capture_params.update({"amount_to_capture": amount_to_capture})
+
+        payment_intent.capture(**capture_params)
 
     def retrieve_charge(self, charge_id):
         return self.stripe_client.charges.retrieve(charge_id)
