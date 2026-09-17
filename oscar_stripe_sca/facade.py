@@ -595,6 +595,15 @@ class Facade:
     def _get_invoice_product_title(self, product):
         return product.get_title()
 
+    def _finalize_invoice(self, invoice_id, payment_intent_id):
+        return self.stripe_client.invoices.finalize_invoice(invoice=invoice_id)
+
+    def _attach_payment_to_invoice(self, invoice_id, payment_intent_id):
+        return self.stripe_client.invoices.attach_payment(
+            invoice_id,
+            params={"payment_intent": payment_intent_id},
+        )
+
     def create_invoice(self, payment_intent_id, invoice_number=None):
         invoicer = self.stripe_client.invoices
 
@@ -761,12 +770,11 @@ class Facade:
 
         # The invoice may now be finalized...
         self.logger.info(f"*** Finalizing invoice: {invoice_info}")
-        invoicer.finalize_invoice(invoice=invoice_id)
+        self._finalize_invoice(invoice_id, payment_intent_id)
 
         # ... linked to its payment...
         self.logger.info(f"*** Attaching payment to invoice: {invoice_info}")
-        params = {"payment_intent": payment_intent_id}
-        invoicer.attach_payment(invoice_id, params=params)
+        self._attach_payment_to_invoice(invoice_id, payment_intent_id)
 
         # ... and sent, *if* that should be done through Stripe.
         if settings.STRIPE_INVOICE_SENDING == INVOICE_SENDING_AUTOMATIC:
