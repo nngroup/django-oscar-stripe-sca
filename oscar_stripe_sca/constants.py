@@ -1,6 +1,7 @@
 PACKAGE_NAME = "oscar_stripe_sca"
 
 SESSION_MODE_PAYMENT = "payment"
+SESSION_MODE_SUBSCRIPTION = "subscription"
 
 PAYMENT_EVENT_PURCHASE = "Purchase"
 
