@@ -295,16 +295,25 @@ class StripeSCAWebhookView(
                 logger.info(f"*** basket_id: {basket_id}")
                 basket = self.load_frozen_basket(basket_id)
 
+            if basket is None:
+                logger.error(
+                    "*** Unable to load frozen basket with ID %s, aborting!",
+                    basket_id,
+                )
+                return HttpResponse(status=HTTPStatus.OK)
+
             try:
                 shipping_code = event_metadata["shipping_method"]
             except KeyError:
                 logger.error("*** No shipping code in event metadata, aborting!")
                 return HttpResponse(status=HTTPStatus.OK)
             if shipping_code == NoShippingRequired().code:
-                logger.info(f"*** No shipping required")
-                shipping_method = None
+                # Keep a real method so build_submission can price the order.
+                # None makes order_total None, and placement never runs.
+                logger.info("*** No shipping required")
+                shipping_method = NoShippingRequired()
             else:
-                logger.info(f"*** shipping_code: {shipping_code}")    
+                logger.info(f"*** shipping_code: {shipping_code}")
                 shipping_method = self.get_shipping_method_by_code(
                     shipping_code, basket
                 )
