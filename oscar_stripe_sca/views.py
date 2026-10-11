@@ -201,15 +201,14 @@ class StripeSCAWebhookView(
         except SignatureVerificationError:
             logger.error("*** Stripe signature verification error!")
             return HttpResponse(status=HTTPStatus.BAD_REQUEST)
-        else:
-            if not facade.is_event_relevant(event):
-                logger.info("*** Event is irrelevant, skipping...")
-                return HttpResponse(status=HTTPStatus.OK)
-
         event_type = event.type
         event_data = event.data.object
-        event_metadata = event_data.get("metadata")
         logger.info(f"*** Stripe event: [{event_type}] --> {event_data}")
+
+        event_metadata = facade.get_payment_metadata(event_data)
+        if not facade.is_oscar_metadata(event_metadata):
+            logger.info("*** Event is irrelevant, skipping...")
+            return HttpResponse(status=HTTPStatus.OK)
 
         should_submit_basket = False
 
