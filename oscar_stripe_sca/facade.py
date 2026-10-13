@@ -511,6 +511,17 @@ class Facade:
 
     def retrieve_checkout_session_lines(self, checkout_session):
         return self.stripe_client.checkout.sessions.line_items.list(checkout_session.id)
+    
+    def retrieve_invoice_by_invoice_id(self, invoice_id, params={}):
+        return self.stripe_client.invoices.retrieve(invoice_id, params=params)
+    
+    def retrieve_payment_intent_from_invoice(self, invoice_id):
+        invoice = self.retrieve_invoice_by_invoice_id(invoice_id, params={"expand": ["payments"]})
+        for invoice_payment in (invoice.get("payments") or {}).get("data") or []:
+            payment = invoice_payment.get("payment") or {}
+            if payment.get("type") == "payment_intent":
+                return payment.get("payment_intent")
+        return None
 
     def retrieve_payment_intent_id(self, checkout_session_id):
         checkout_session = self.retrieve_checkout_session(checkout_session_id)
@@ -521,17 +532,8 @@ class Facade:
         # subscription mode leaves payment_intent empty;
         # payment_intent_id is stored on the invoice payment object.
         invoice_id = checkout_session.get("invoice")
-        if not invoice_id:
-            return None
-
-        invoice = self.stripe_client.invoices.retrieve(
-            invoice_id,
-            params={"expand": ["payments"]},
-        )
-        for invoice_payment in (invoice.get("payments") or {}).get("data") or []:
-            payment = invoice_payment.get("payment") or {}
-            if payment.get("type") == "payment_intent":
-                return payment.get("payment_intent")
+        if invoice_id:
+            return self.retrieve_payment_intent_from_invoice(invoice_id)
 
         return None
 
@@ -869,6 +871,8 @@ class Facade:
 
         payment_details = event_data.get("payment_details") or {}
         order_reference = payment_details.get("order_reference")
+        
+        # Stripe checkout session IDs are prefixed with "cs_":
         if not order_reference or not str(order_reference).startswith("cs_"):
             return metadata
 
@@ -882,5 +886,5 @@ class Facade:
         subscription invoice payment, on the Checkout Session.
 
         """
-        metadata = self.metadata_for_payment(event.data.object)
+        metadata = self.get_payment_metadata(event.data.object)
         return self.is_oscar_metadata(metadata)
