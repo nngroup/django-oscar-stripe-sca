@@ -38,6 +38,7 @@ class PaymentItem:
     price: Decimal
     is_tax_included: bool
     tax_code: str = None
+    recurrence: dict = None
 
 
 class Facade:
@@ -202,35 +203,37 @@ class Facade:
         else:
             return CAPTURE_METHOD_MANUAL
 
-    def _get_session_mode(self):
+    def _get_session_mode(self, basket):
         return SESSION_MODE_PAYMENT
 
     def build_session_params(
         self, basket, customer_email, session_line_items, session_metadata
     ):
 
-        session_mode = self._get_session_mode()
+        session_mode = self._get_session_mode(basket)
         capture_method = self._get_capture_method(basket)
         success_url = self._get_success_url(basket)
         cancel_url = self._get_cancel_url(basket)
 
         session_params = {
             "mode": session_mode,
-            "customer_creation": "always",
             "customer_email": customer_email,
             "line_items": session_line_items,
             "metadata": session_metadata,
             "success_url": success_url,
             "cancel_url": cancel_url,
         }
-
-        payment_intent_data = {
-            "metadata": session_metadata,
-            "capture_method": capture_method,
-        }
-        if self._should_generate_invoice(basket):
-            payment_intent_data["receipt_email"] = customer_email
-        session_params["payment_intent_data"] = payment_intent_data
+        if session_mode == SESSION_MODE_PAYMENT:
+            session_params.update(
+                {"customer_creation": "always"}
+            )
+            payment_intent_data = {
+                "metadata": session_metadata,
+                "capture_method": capture_method,
+            }
+            if self._should_generate_invoice(basket):
+                payment_intent_data["receipt_email"] = customer_email
+            session_params["payment_intent_data"] = payment_intent_data
 
         if capture_method == CAPTURE_METHOD_MANUAL:
             payment_method_options = {
@@ -326,7 +329,15 @@ class Facade:
 
         return session_metadata
 
-    def _prepare_line_item(self, title, tax_code, quantity, currency, amount):
+    def _prepare_line_item(
+        self,
+        title,
+        tax_code,
+        quantity,
+        currency,
+        amount,
+        recurrence,
+    ):
         prepared_line_item = {}
 
         product_data = {"name": title}
@@ -341,6 +352,8 @@ class Facade:
             },
             "quantity": quantity,
         }
+        if recurrence:
+            prepared_line_item["price_data"]["recurring"] = recurrence
 
         return prepared_line_item
 
@@ -374,6 +387,7 @@ class Facade:
                     raw_line_item.price,
                     raw_line_item.currency,
                 ),
+                raw_line_item.recurrence,
             )
             prepared_line_items.append(prepared_line_item)
 
@@ -388,26 +402,35 @@ class Facade:
     def _get_product_tax_code(self, product):
         return settings.STRIPE_DEFAULT_PRODUCT_TAX_CODE
 
+    def _get_product_recurrence(self, product) -> dict | None:
+        return None
+
+    def _build_raw_line_item(self, basket_line, currency):
+        product = basket_line.product
+        for prices in basket_line.get_price_breakdown():  # apply discounts!!!
+            _, price_excl_tax, quantity = prices
+
+            payment_item_data = {
+                "title": product.get_title(),
+                "quantity": quantity,
+                "currency": currency,
+                "price": price_excl_tax,
+                "is_tax_included": False,
+                "tax_code": self._get_product_tax_code(product),
+                "recurrence": self._get_product_recurrence(product),
+            }
+            raw_line_item = PaymentItem(**payment_item_data)
+
+        return raw_line_item
+
     def get_raw_line_items(self, basket, shipping_method):
         raw_line_items = []
 
         currency = basket.currency
 
         for line in basket.all_lines():
-            product = line.product
-            for prices in line.get_price_breakdown():  # apply discounts!!!
-                _, price_excl_tax, quantity = prices
-
-                raw_line_items.append(
-                    PaymentItem(
-                        title=product.get_title(),
-                        quantity=quantity,
-                        currency=currency,
-                        price=price_excl_tax,
-                        is_tax_included=False,
-                        tax_code=self._get_product_tax_code(product),
-                    )
-                )
+            raw_line_item = self._build_raw_line_item(line, currency)
+            raw_line_items.append(raw_line_item)
 
         if basket.is_shipping_required() and shipping_method:
             shipping_price = shipping_method.calculate(basket)
@@ -488,10 +511,34 @@ class Facade:
 
     def retrieve_checkout_session_lines(self, checkout_session):
         return self.stripe_client.checkout.sessions.line_items.list(checkout_session.id)
+    
+    def retrieve_invoice_by_invoice_id(self, invoice_id, params={}):
+        return self.stripe_client.invoices.retrieve(invoice_id, params=params)
+    
+    def extract_payments_from_invoice(self, invoice):
+        return (invoice.get("payments") or {}).get("data") or []
+    
+    def retrieve_payment_intent_from_invoice(self, invoice_id):
+        invoice = self.retrieve_invoice_by_invoice_id(invoice_id, params={"expand": ["payments"]})
+        for invoice_payment in self.extract_payments_from_invoice(invoice):
+            payment = invoice_payment.get("payment") or {}
+            if payment.get("type") == "payment_intent":
+                return payment.get("payment_intent")
+        return None
 
     def retrieve_payment_intent_id(self, checkout_session_id):
         checkout_session = self.retrieve_checkout_session(checkout_session_id)
-        return checkout_session.get("payment_intent")
+        payment_intent_id = checkout_session.get("payment_intent")
+        if payment_intent_id:
+            return payment_intent_id
+
+        # subscription mode leaves payment_intent empty;
+        # payment_intent_id is stored on the invoice payment object.
+        invoice_id = checkout_session.get("invoice")
+        if invoice_id:
+            return self.retrieve_payment_intent_from_invoice(invoice_id)
+
+        return None
 
     def retrieve_payment_intent(self, payment_intent_id=None, checkout_session_id=None):
         if not payment_intent_id:
@@ -809,18 +856,38 @@ class Facade:
 
         return self.stripe_client.construct_event(**params)
 
+    def is_oscar_metadata(self, metadata):
+        if not metadata:
+            return False
+        return metadata.get(SHOPPING_CART_SYSTEM) == OSCAR
+
+    def get_payment_metadata(self, event_data):
+        """Return Oscar checkout metadata for a PaymentIntent.
+
+        One-time payments carry metadata on the PaymentIntent.
+        
+        Subscription invoice payments carry metadata on the Checkout Session.
+        """
+        metadata = event_data.get("metadata") or {}
+        if self.is_oscar_metadata(metadata):
+            return metadata
+
+        payment_details = event_data.get("payment_details") or {}
+        order_reference = payment_details.get("order_reference")
+        
+        # Stripe checkout session IDs are prefixed with "cs_":
+        if not order_reference or not str(order_reference).startswith("cs_"):
+            return metadata
+
+        checkout_session = self.retrieve_checkout_session(order_reference)
+        return checkout_session.get("metadata") or {}
+
     def is_event_relevant(self, event):
         """Ensure the received event is relevant before processing it.
 
-        This default implementation only checks the event metadata to
-        confirm that it was sent in response to an Oscar-generated
-        checkout session.
+        Oscar checkout metadata may live on the PaymentIntent or, for a
+        subscription invoice payment, on the Checkout Session.
 
         """
-        event_data = event.data.object
-        try:
-            metadata = event_data["metadata"]
-        except KeyError:
-            return False
-        else:
-            return metadata.get(SHOPPING_CART_SYSTEM) == OSCAR
+        metadata = self.get_payment_metadata(event.data.object)
+        return self.is_oscar_metadata(metadata)
