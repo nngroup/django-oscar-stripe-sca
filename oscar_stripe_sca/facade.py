@@ -515,9 +515,12 @@ class Facade:
     def retrieve_invoice_by_invoice_id(self, invoice_id, params={}):
         return self.stripe_client.invoices.retrieve(invoice_id, params=params)
     
+    def extract_payments_from_invoice(self, invoice):
+        return (invoice.get("payments") or {}).get("data") or []
+    
     def retrieve_payment_intent_from_invoice(self, invoice_id):
         invoice = self.retrieve_invoice_by_invoice_id(invoice_id, params={"expand": ["payments"]})
-        for invoice_payment in (invoice.get("payments") or {}).get("data") or []:
+        for invoice_payment in self.extract_payments_from_invoice(invoice):
             payment = invoice_payment.get("payment") or {}
             if payment.get("type") == "payment_intent":
                 return payment.get("payment_intent")
