@@ -205,6 +205,14 @@ class StripeSCAWebhookView(
         event_data = event.data.object
         logger.info(f"*** Stripe event: [{event_type}] --> {event_data}")
 
+        if event_type in (
+            "customer.subscription.updated",
+            "customer.subscription.deleted",
+        ):
+            facade.record_subscription_change(event_data)
+            logger.info("*** Stripe webhook processing complete")
+            return HttpResponse(status=HTTPStatus.OK)
+
         event_metadata = facade.get_payment_metadata(event_data)
         if not facade.is_oscar_metadata(event_metadata):
             logger.info("*** Event is irrelevant, skipping...")
