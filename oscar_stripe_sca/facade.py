@@ -845,6 +845,9 @@ class Facade:
     def record_invoice(self, invoice_id, payment_intent_id):
         raise NotImplementedError  # Implement before calling!
 
+    def retrieve_subscription(self, subscription_id):
+        return self.stripe_client.subscriptions.retrieve(subscription_id)
+
     def construct_event(self, payload, sig_header):
         params = {
             "payload": payload,
@@ -855,6 +858,9 @@ class Facade:
             params.update({"secret": secret})
 
         return self.stripe_client.construct_event(**params)
+
+    def record_subscription_change(self, subscription):
+        raise NotImplementedError  # Implement before calling!
 
     def is_oscar_metadata(self, metadata):
         if not metadata:
