@@ -861,6 +861,33 @@ class Facade:
 
     def record_subscription_change(self, subscription):
         raise NotImplementedError  # Implement before calling!
+    
+    def build_billing_portal_url(self, subscription_id, return_url) -> str:
+        subscription = self.retrieve_subscription(subscription_id)
+        customer = subscription.get("customer")
+        if not isinstance(customer, str):
+            customer = customer.get("id")
+        session = self.stripe_client.billing_portal.sessions.create(
+            params={"customer": customer, "return_url": return_url}
+        )
+        return session.get("url")
+
+    def build_subscription_cancel_portal_url(self, subscription_id, return_url) -> str:
+        subscription = self.retrieve_subscription(subscription_id)
+        customer = subscription.get("customer")
+        if not isinstance(customer, str):
+            customer = customer.get("id")
+        session = self.stripe_client.billing_portal.sessions.create(
+            params={
+                "customer": customer,
+                "return_url": return_url,
+                "flow_data": {
+                    "type": "subscription_cancel",
+                    "subscription_cancel": {"subscription": subscription_id},
+                },
+            }
+        )
+        return session.get("url")
 
     def is_oscar_metadata(self, metadata):
         if not metadata:
