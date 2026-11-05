@@ -152,7 +152,7 @@ class Facade:
             and not self._is_tax_known_before_checkout(basket)
         )
 
-    def _should_send_receipt(self, basket):
+    def _should_send_receipt(self, basket, session_mode):
         return settings.STRIPE_ENABLE_RECEIPT_EXPEDITION
 
     def _get_cancel_url(self, basket):
@@ -249,7 +249,7 @@ class Facade:
             )
             session_params.update(tax_session_params)
 
-        if self._should_send_receipt(basket):
+        if self._should_send_receipt(basket, session_mode):
             invoice_session_params = self._get_invoice_session_params(
                 session_params, session_line_items
             )
