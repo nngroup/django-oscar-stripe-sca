@@ -201,20 +201,24 @@ class StripeSCAWebhookView(
         except SignatureVerificationError:
             logger.error("*** Stripe signature verification error!")
             return HttpResponse(status=HTTPStatus.BAD_REQUEST)
+
+        event_id = event.id
         event_type = event.type
+        logger.info(f"*** Stripe event: {event_id} --> type: {event_type}")
         event_data = event.data.object
-        logger.info(f"*** Stripe event: [{event_type}] --> {event_data}")
+        logger.info(f"*** Stripe event: {event_id} --> data: {event_data}")
 
         if event_type in (
             "customer.subscription.updated",
             "customer.subscription.deleted",
         ):
             facade.record_subscription_change(event_data)
-            logger.info("*** Stripe webhook processing complete")
+            logger.info("*** Subscription updated, webhook processing complete")
             return HttpResponse(status=HTTPStatus.OK)
 
-        event_metadata = facade.get_payment_metadata(event_data)
-        if not facade.is_oscar_metadata(event_metadata):
+        checkout_metadata = facade.get_checkout_metadata(event)
+        logger.info(f"*** Stripe event: {event_id} --> metadata: {checkout_metadata}")
+        if not facade.is_oscar_metadata(checkout_metadata):
             logger.info("*** Event is irrelevant, skipping...")
             return HttpResponse(status=HTTPStatus.OK)
 
@@ -225,7 +229,7 @@ class StripeSCAWebhookView(
 
             # Abort if we shouldn't capture this payment intent manually
             try:
-                capture_method = event_metadata["capture_method"]
+                capture_method = checkout_metadata["capture_method"]
             except KeyError:
                 capture_method = CAPTURE_METHOD_AUTOMATIC
             if capture_method == CAPTURE_METHOD_AUTOMATIC:
@@ -243,9 +247,9 @@ class StripeSCAWebhookView(
 
             # Abort if we can't find an actual product amount to capture
             try:
-                total_excl_tax = int(event_metadata["total_excl_tax"])
+                total_excl_tax = int(checkout_metadata["total_excl_tax"])
             except KeyError:
-                logger.error("*** No total_excl_tax in event metadata, aborting!")
+                logger.error("*** No total_excl_tax in checkout metadata, aborting!")
                 return HttpResponse(status=HTTPStatus.OK)
             else:
                 logger.info(f"*** total_excl_tax: {total_excl_tax}")
@@ -263,18 +267,18 @@ class StripeSCAWebhookView(
             )
 
             try:
-                basket_id = event_metadata["basket_id"]
+                basket_id = checkout_metadata["basket_id"]
             except KeyError:
-                logger.error("*** No basket id in event metadata, aborting!")
+                logger.error("*** No basket id in checkout metadata, aborting!")
                 return HttpResponse(status=HTTPStatus.OK)
             else:
                 logger.info(f"*** basket_id: {basket_id}")
                 basket = self.load_frozen_basket(basket_id)
 
             try:
-                shipping_code = event_metadata["shipping_method"]
+                shipping_code = checkout_metadata["shipping_method"]
             except KeyError:
-                logger.error("*** No shipping code in event metadata, aborting!")
+                logger.error("*** No shipping code in checkout metadata, aborting!")
                 return HttpResponse(status=HTTPStatus.OK)
             else:
                 logger.info(f"*** shipping_code: {shipping_code}")
@@ -290,13 +294,13 @@ class StripeSCAWebhookView(
 
             should_submit_basket = True
 
-        if event_type == "payment_intent.succeeded":
+        elif event_type == "payment_intent.succeeded":
             payment_intent_id = event_data["id"]
 
             try:
-                basket_id = event_metadata["basket_id"]
+                basket_id = checkout_metadata["basket_id"]
             except KeyError:
-                logger.error("*** No basket id in event metadata, aborting!")
+                logger.error("*** No basket id in checkout metadata, aborting!")
                 return HttpResponse(status=HTTPStatus.OK)
             else:
                 logger.info(f"*** basket_id: {basket_id}")
@@ -310,9 +314,9 @@ class StripeSCAWebhookView(
                 return HttpResponse(status=HTTPStatus.OK)
 
             try:
-                shipping_code = event_metadata["shipping_method"]
+                shipping_code = checkout_metadata["shipping_method"]
             except KeyError:
-                logger.error("*** No shipping code in event metadata, aborting!")
+                logger.error("*** No shipping code in checkout metadata, aborting!")
                 return HttpResponse(status=HTTPStatus.OK)
             if shipping_code == NoShippingRequired().code:
                 # Keep a real method so build_submission can price the order.
@@ -326,7 +330,7 @@ class StripeSCAWebhookView(
                 )
 
             try:
-                paid_tax_amount = int(event_metadata["tax_amount"])  # in cents
+                paid_tax_amount = int(checkout_metadata["tax_amount"])  # in cents
             except KeyError:
                 try:
                     paid_tax_amount = event_data["amount_details"]["tax"]["total_tax_amount"]  # noqa
@@ -335,7 +339,7 @@ class StripeSCAWebhookView(
             logger.info(f"*** paid_tax_amount: {paid_tax_amount}")
 
             try:
-                tax_rate_version_id = event_metadata["tax_rate_version_id"]
+                tax_rate_version_id = checkout_metadata["tax_rate_version_id"]
             except KeyError:
                 tax_rate_version_id = None
             logger.info(f"*** tax_rate_version_id: {tax_rate_version_id}")
@@ -351,7 +355,7 @@ class StripeSCAWebhookView(
                 tax_rate_version_id=tax_rate_version_id,
             )  # from OneStepPaymentMixin
 
-        logger.info("*** Stripe webhook processing complete")
+        logger.info("*** Payment acknowledged, webhook processing complete")
         return HttpResponse(status=HTTPStatus.OK)
 
 
