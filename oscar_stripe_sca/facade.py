@@ -889,38 +889,52 @@ class Facade:
         )
         return session.get("url")
 
-    def is_oscar_metadata(self, metadata):
+    def is_oscar_metadata(self, metadata: dict) -> bool:
         if not metadata:
-            return False
-        return metadata.get(SHOPPING_CART_SYSTEM) == OSCAR
+            is_oscar = False
+        else:
+            is_oscar = metadata.get(SHOPPING_CART_SYSTEM) == OSCAR
 
-    def get_payment_metadata(self, event_data):
-        """Return Oscar checkout metadata for a PaymentIntent.
+        self.logger.info(f"*** is_oscar_metadata: {is_oscar}")
+        return is_oscar
 
-        One-time payments carry metadata on the PaymentIntent.
-        
-        Subscription invoice payments carry metadata on the Checkout Session.
-        """
-        metadata = event_data.get("metadata") or {}
-        if self.is_oscar_metadata(metadata):
-            return metadata
+    def get_checkout_metadata(self, event) -> dict:
+        """Return checkout metadata from a webhook payload."""
+        self.logger.info("*** Extracting Stripe checkout metadata...")
 
-        payment_details = event_data.get("payment_details") or {}
-        order_reference = payment_details.get("order_reference")
-        
-        # Stripe checkout session IDs are prefixed with "cs_":
-        if not order_reference or not str(order_reference).startswith("cs_"):
-            return metadata
+        # First we try to extract the checkout metadata directly.
+        event_data = event.data.object
+        checkout_metadata = event_data.get("metadata") or {}
+        if checkout_metadata != {}:
+            self.logger.info(f"*** checkout_metadata: {checkout_metadata}")
+            return checkout_metadata
 
-        checkout_session = self.retrieve_checkout_session(order_reference)
-        return checkout_session.get("metadata") or {}
+        # If it wasn't there, we need to retrieve the checkout session.
+        # If our current object is a payment intent, that's easy.
+        object_type = event_data.get("object")
+        if object_type == "payment_intent":
+            payment_intent_id = event_data.get("id")
+            self.logger.info(f"*** payment_intent_id: {payment_intent_id}")
+            checkout_session = self.retrieve_checkout_session_by_payment_intent_id(
+                payment_intent_id
+            )
+            if checkout_session is not None:
+                checkout_session_id = checkout_session.get("id")
+                self.logger.info(f"*** checkout_session_id: {checkout_session_id}")
+                checkout_metadata = checkout_session.get("metadata")
+                self.logger.info(f"*** checkout_metadata: {checkout_metadata}")
+                return checkout_metadata
 
-    def is_event_relevant(self, event):
+        # Otherwise, that's not going to work.
+        self.logger.info("*** No checkout metadata found :(")
+        return {}
+
+    def is_event_relevant(self, event) -> bool:
         """Ensure the received event is relevant before processing it.
 
         Oscar checkout metadata may live on the PaymentIntent or, for a
         subscription invoice payment, on the Checkout Session.
 
         """
-        metadata = self.get_payment_metadata(event.data.object)
-        return self.is_oscar_metadata(metadata)
+        checkout_metadata = self.get_checkout_metadata(event)
+        return self.is_oscar_metadata(checkout_metadata)
